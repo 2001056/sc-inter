@@ -507,13 +507,16 @@ input:focus-visible {
 }
 
 .gauge__track {
-  height: 7px;
+  /* span 은 기본이 inline 이라 그대로 두면 width/height 가 먹지 않아 막대가 안 보인다. */
+  display: block;
+  height: 8px;
   border-radius: 999px;
   background: var(--bg-sunken);
   overflow: hidden;
 }
 
 .gauge__fill {
+  display: block;
   height: 100%;
   border-radius: 999px;
   background: var(--accent);
@@ -647,6 +650,28 @@ input:focus-visible {
   letter-spacing: -0.04em;
   color: var(--accent);
   text-shadow: 0 16px 70px rgba(0, 0, 0, 0.75);
+}
+
+/*
+ * 터치 기기에서는 화면 아래 절반을 조이스틱과 버튼이 차지한다.
+ * HUD 를 아래에 두면 손가락에 가리므로 두 줄 모두 위로 올린다.
+ */
+.match--touch .hud {
+  justify-content: flex-start;
+  gap: var(--space-3);
+}
+
+.match--touch .hud__bottom {
+  align-items: flex-start;
+}
+
+.match--touch .gauges {
+  min-width: 0;
+  flex: 1;
+}
+
+.match--touch .minimap {
+  width: 112px;
 }
 
 /* ---------- 모바일 터치 조작 ---------- */

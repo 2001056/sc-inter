@@ -122,9 +122,13 @@ export class PlayerAnimator {
         this.poseStepover(this.skillProgress("stepover", input.skillMs));
         snap = true;
         break;
-      case "feint":
-        // 좌우 구분은 anim 이 아니라 `skill` 에 들어 있다.
-        this.poseBodyFeint(input.skill === "feintRight" ? -1 : 1, this.skillProgress("feint", input.skillMs));
+      // 서버가 좌우를 따로 내려 준다. 하나로 합쳐 받으면 한쪽이 idle 로 떨어진다.
+      case "feintLeft":
+        this.poseBodyFeint(1, this.skillProgress("feintLeft", input.skillMs));
+        snap = true;
+        break;
+      case "feintRight":
+        this.poseBodyFeint(-1, this.skillProgress("feintRight", input.skillMs));
         snap = true;
         break;
       case "dragback":

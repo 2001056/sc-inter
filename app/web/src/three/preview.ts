@@ -15,7 +15,8 @@ const SHOWCASE: { anim: AnimState; seconds: number; speed: number }[] = [
   { anim: "idle", seconds: 2.6, speed: 0 },
   { anim: "run", seconds: 3.0, speed: 6.2 },
   { anim: "stepover", seconds: 1.1, speed: 1.4 },
-  { anim: "feint", seconds: 1.1, speed: 1.2 },
+  { anim: "feintLeft", seconds: 1.1, speed: 1.2 },
+  { anim: "feintRight", seconds: 1.1, speed: 1.2 },
   { anim: "dragback", seconds: 1.2, speed: 0.8 },
   { anim: "sprint", seconds: 2.4, speed: 9 },
   { anim: "shoot", seconds: 1.2, speed: 3.4 },
@@ -42,16 +43,16 @@ export class PlayerPreview {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.1;
+    this.renderer.toneMappingExposure = 1.25;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     this.camera = new THREE.PerspectiveCamera(34, 1, 0.1, 60);
     this.scene.add(this.camera);
 
     // 인물 사진 조명: 앞 위쪽 주광 + 뒤쪽 림라이트 + 옅은 환경광.
-    this.scene.add(new THREE.HemisphereLight("#bcd8ff", "#24351f", 0.95));
+    this.scene.add(new THREE.HemisphereLight("#cfe2ff", "#2c3f26", 1.45));
 
-    const key = new THREE.DirectionalLight("#fff4e2", 3.1);
+    const key = new THREE.DirectionalLight("#fff4e2", 3.4);
     key.position.set(2.4, 3.6, 3.2);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -62,14 +63,20 @@ export class PlayerPreview {
     key.shadow.camera.near = 0.5;
     key.shadow.camera.far = 14;
     key.shadow.bias = -0.0009;
+    key.shadow.normalBias = 0.03;
     this.scene.add(key);
 
     const rim = new THREE.DirectionalLight("#7fc6ff", 2.2);
     rim.position.set(-2.8, 2.4, -3.0);
     this.scene.add(rim);
 
-    const fill = new THREE.DirectionalLight("#ffe6c4", 1.5);
+    const fill = new THREE.DirectionalLight("#ffe6c4", 1.3);
     fill.position.set(-1.4, 1.5, 3.4);
+
+    // 얼굴 전용 정면광. 머리카락 그림자로 이목구비가 죽는 것을 막는다.
+    const faceLight = new THREE.DirectionalLight("#fff3e6", 2.1);
+    faceLight.position.set(0.5, 1.9, 4.2);
+    this.scene.add(faceLight);
     this.scene.add(fill);
 
     // 발밑 잔디 원판. 선수가 허공에 뜬 것처럼 보이지 않게 한다.
@@ -154,5 +161,11 @@ export class PlayerPreview {
     this.pedestal.geometry.dispose();
     (this.pedestal.material as THREE.Material).dispose();
     this.renderer.dispose();
+    /*
+     * dispose() 만으로는 WebGL 컨텍스트가 반납되지 않는다.
+     * 로비와 경기를 오갈 때마다 렌더러를 새로 만들기 때문에, 이걸 빼먹으면
+     * 브라우저의 컨텍스트 상한(보통 16개)에 걸려 프레임이 1fps 까지 떨어진다.
+     */
+    this.renderer.forceContextLoss();
   }
 }

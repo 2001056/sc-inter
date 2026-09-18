@@ -38,7 +38,8 @@ const MATERIALS = [
 ] as const;
 type MaterialName = (typeof MATERIALS)[number];
 
-const SKIN_TONES = ["#e0ac86", "#c98b62", "#a2673f", "#7a4a2b", "#5a3520"];
+// 밤 경기장 조명에서도 이목구비가 읽히는 밝기 범위로 고른다.
+const SKIN_TONES = ["#f0c3a0", "#dea981", "#c2865c", "#9c6540", "#7b4b2e"];
 const HAIR_TONES = ["#1d1a17", "#2f2620", "#4a3526", "#0f0e0d"];
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -261,15 +262,22 @@ function buildHead(parts: PartBuffers[], indexOf: Map<string, number>): void {
 
   // 머리카락. 앞쪽은 이마가 드러나게 뒤로 물리고, 뒤통수는 아래까지 덮는다.
   const hair = emptyPart("hair");
-  ellipsoid(hair, center.clone().add(v3(0, 0.006, -0.016)), v3(0.0965, 0.122, 0.107), {
+  // 정수리 덮개.
+  ellipsoid(hair, center.clone().add(v3(0, 0.005, -0.006)), v3(0.0965, 0.1225, 0.1075), {
     widthSegments: 26,
-    heightSegments: 20,
-    rowRange: [0, 0.42],
+    heightSegments: 22,
+    rowRange: [0, 0.44],
   });
-  ellipsoid(hair, center.clone().add(v3(0, -0.012, -0.03)), v3(0.094, 0.112, 0.1), {
+  // 뒤통수와 옆머리. 앞쪽으로는 오지 않게 뒤로 밀어 둔다.
+  ellipsoid(hair, center.clone().add(v3(0, -0.014, -0.03)), v3(0.0955, 0.115, 0.102), {
     widthSegments: 22,
-    heightSegments: 16,
-    rowRange: [0.24, 0.66],
+    heightSegments: 18,
+    rowRange: [0.26, 0.72],
+  });
+  // 앞머리. 이마 위에 살짝 내려온 앞머리가 있어야 헤어라인이 자연스럽다.
+  ellipsoid(hair, center.clone().add(v3(0, 0.038, 0.028)), v3(0.082, 0.038, 0.075), {
+    widthSegments: 20,
+    heightSegments: 10,
   });
   assignRigid(hair, "head", indexOf);
   parts.push(hair);
@@ -279,66 +287,71 @@ function buildHead(parts: PartBuffers[], indexOf: Map<string, number>): void {
   const brow = emptyPart("hair");
   const face = emptyPart("skin");
 
+  /*
+   * 얼굴 부품의 z 값은 눈대중이 아니라 두상 타원체의 표면 위치에서 잡았다.
+   * 눈 높이(y=1.676, x=0.034)의 표면은 z≈0.099 라서, 이보다 안쪽에 두면 아예
+   * 파묻혀 보이지 않고(처음에 그래서 민짜 달걀 얼굴이 됐다) 너무 앞에 두면
+   * 눈알이 튀어나온 인형이 된다. 2~3mm 만 나오게 두는 것이 사람처럼 보인다.
+   */
   for (const s of [1, -1]) {
-    // 눈은 두개골 안쪽으로 묻는다. 앞으로 튀어나오면 바로 인형처럼 보인다.
-    ellipsoid(white, v3(s * 0.034, 1.676, 0.079), v3(0.0135, 0.0105, 0.009), {
-      widthSegments: 12,
-      heightSegments: 8,
+    ellipsoid(white, v3(s * 0.0345, 1.6745, 0.0885), v3(0.0135, 0.0098, 0.0105), {
+      widthSegments: 14,
+      heightSegments: 10,
     });
-    ellipsoid(pupil, v3(s * 0.0345, 1.6755, 0.0845), v3(0.0062, 0.0068, 0.005), {
+    ellipsoid(pupil, v3(s * 0.0355, 1.674, 0.0955), v3(0.0072, 0.0078, 0.0062), {
       widthSegments: 10,
       heightSegments: 8,
     });
-    // 윗눈꺼풀: 눈 위쪽을 살짝 덮어 동그란 구슬로 보이지 않게 한다.
-    ellipsoid(face, v3(s * 0.034, 1.6835, 0.0805), v3(0.0165, 0.008, 0.011), {
-      widthSegments: 12,
+    // 윗눈꺼풀: 눈 위를 살짝 덮어 동그란 구슬로 보이지 않게 한다.
+    ellipsoid(face, v3(s * 0.0345, 1.6835, 0.0885), v3(0.0172, 0.0072, 0.0095), {
+      widthSegments: 14,
       heightSegments: 8,
     });
     // 아랫눈꺼풀.
-    ellipsoid(face, v3(s * 0.034, 1.6685, 0.081), v3(0.0155, 0.0055, 0.0105), {
-      widthSegments: 12,
+    ellipsoid(face, v3(s * 0.0345, 1.6685, 0.0865), v3(0.0152, 0.0042, 0.0075), {
+      widthSegments: 14,
       heightSegments: 8,
     });
-    // 눈썹은 얇고 눈보다 살짝 바깥으로.
-    ellipsoid(brow, v3(s * 0.036, 1.6925, 0.0825), v3(0.0175, 0.0028, 0.006), {
+    // 눈썹.
+    ellipsoid(brow, v3(s * 0.0365, 1.6915, 0.0895), v3(0.0215, 0.0042, 0.0072), {
       widthSegments: 12,
       heightSegments: 6,
+    });
+    // 광대.
+    ellipsoid(face, v3(s * 0.0555, 1.6425, 0.0715), v3(0.019, 0.013, 0.0095), {
+      widthSegments: 12,
+      heightSegments: 8,
     });
     // 귀.
     ellipsoid(face, v3(s * 0.0885, 1.664, -0.004), v3(0.0075, 0.023, 0.014), {
       widthSegments: 10,
       heightSegments: 10,
     });
-    // 광대.
-    ellipsoid(face, v3(s * 0.05, 1.649, 0.072), v3(0.023, 0.018, 0.016), {
-      widthSegments: 10,
-      heightSegments: 8,
-    });
   }
 
-  // 코: 콧대에서 코끝까지 좁게.
+  // 코: 콧대에서 코끝까지. 표면(z≈0.107)보다 1cm 남짓 나오게 한다.
   sweep(
     face,
     [
-      { center: v3(0, 1.679, 0.081), rx: 0.0085, rz: 0.011 },
-      { center: v3(0, 1.663, 0.089), rx: 0.011, rz: 0.014 },
-      { center: v3(0, 1.648, 0.094), rx: 0.0145, rz: 0.016 },
-      { center: v3(0, 1.639, 0.0905), rx: 0.0125, rz: 0.012 },
+      { center: v3(0, 1.6765, 0.0955), rx: 0.0062, rz: 0.0075 },
+      { center: v3(0, 1.6625, 0.0995), rx: 0.0092, rz: 0.0105 },
+      { center: v3(0, 1.6515, 0.104), rx: 0.014, rz: 0.0135 },
+      { center: v3(0, 1.6425, 0.1005), rx: 0.0125, rz: 0.011 },
     ],
-    { segments: 12, capEnd: true, capDepth: 0.6 },
+    { segments: 14, capEnd: true, capDepth2: 0.6 },
   );
-  // 윗입술·아랫입술.
-  ellipsoid(face, v3(0, 1.6195, 0.0835), v3(0.019, 0.0042, 0.0085), {
-    widthSegments: 14,
+  // 입술. 넓고 납작하게, 두 장을 거의 붙여 한 줄로 보이게 한다.
+  ellipsoid(face, v3(0, 1.6225, 0.0895), v3(0.0235, 0.0042, 0.0072), {
+    widthSegments: 18,
     heightSegments: 8,
   });
-  ellipsoid(face, v3(0, 1.6115, 0.083), v3(0.0175, 0.005, 0.0085), {
-    widthSegments: 14,
+  ellipsoid(face, v3(0, 1.6155, 0.0885), v3(0.0215, 0.0048, 0.0072), {
+    widthSegments: 18,
     heightSegments: 8,
   });
   // 턱 끝.
-  ellipsoid(face, v3(0, 1.5945, 0.064), v3(0.026, 0.019, 0.022), {
-    widthSegments: 14,
+  ellipsoid(face, v3(0, 1.5955, 0.068), v3(0.026, 0.019, 0.021), {
+    widthSegments: 16,
     heightSegments: 10,
   });
 
@@ -411,7 +424,7 @@ export function createPlayerModel(appearance: PlayerAppearance, height: number):
     }),
     sole: new THREE.MeshStandardMaterial({ color: "#14171c", roughness: 0.6 }),
     hair: new THREE.MeshStandardMaterial({ color: appearance.hairTone, roughness: 0.72 }),
-    eyeWhite: new THREE.MeshStandardMaterial({ color: "#f2f3f6", roughness: 0.35 }),
+    eyeWhite: new THREE.MeshStandardMaterial({ color: "#e9e5dc", roughness: 0.4 }),
     eye: new THREE.MeshStandardMaterial({ color: "#14120f", roughness: 0.25 }),
   };
   const materials = MATERIALS.map((name) => byName[name]);

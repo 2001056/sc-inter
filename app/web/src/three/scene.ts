@@ -223,6 +223,14 @@ export class MatchScene {
       ringMaterial.opacity = opacity;
       slot.ring.position.set(world.x, 0.02, world.z);
       slot.ring.visible = true;
+
+      /*
+       * 이름표는 깊이 검사를 끄고 항상 위에 그리기 때문에, 카메라 바로 앞을
+       * 지나가는 선수의 이름표가 화면을 덮을 만큼 커진다. 너무 가까우면 감춘다.
+       * 그 거리에서는 누구인지 이미 몸으로 보인다.
+       */
+      const distance = this.camera.position.distanceTo(slot.model.group.position);
+      slot.label.visible = distance > 3.2;
     }
 
     // 사라진 선수는 치운다(재경기로 구성이 바뀌는 경우).
@@ -338,5 +346,11 @@ export class MatchScene {
     (this.ball.material as THREE.Material).dispose();
     this.ballMap.dispose();
     this.renderer.dispose();
+    /*
+     * dispose() 만으로는 WebGL 컨텍스트가 반납되지 않는다.
+     * 로비와 경기를 오갈 때마다 렌더러를 새로 만들기 때문에, 이걸 빼먹으면
+     * 브라우저의 컨텍스트 상한(보통 16개)에 걸려 프레임이 1fps 까지 떨어진다.
+     */
+    this.renderer.forceContextLoss();
   }
 }
