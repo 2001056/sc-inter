@@ -143,6 +143,21 @@ function round(v: number): number {
   return Math.round(v * 1000) / 1000;
 }
 
+/** 사람이 지금 무언가를 누르고 있는지 */
+function isActiveInput(input: InputState): boolean {
+  return (
+    Math.hypot(input.ax, input.ay) > 0.05 ||
+    input.sprint ||
+    input.shoot ||
+    input.pass ||
+    input.tackle ||
+    input.skillDir !== null
+  );
+}
+
+/** 이 거리보다 공에 가까우면 조작 선수를 바꾸지 않는다(미터) */
+const CONTROL_HANDOVER_DISTANCE = 6;
+
 export class Match {
   phase: Phase = "waiting";
   tick = 0;
@@ -170,6 +185,11 @@ export class Match {
   lastToucherId: string | null = null;
 
   private switchCooldown: Record<Side, number> = { left: 0, right: 0 };
+  /** 패스가 날아가는 동안에는 조작을 다른 선수에게 넘기지 않는다. */
+  private passInFlight: Record<Side, { targetId: string; msLeft: number } | null> = {
+    left: null,
+    right: null,
+  };
 
   constructor() {
     for (const side of ["left", "right"] as const) {
@@ -590,6 +610,7 @@ export class Match {
     this.ball.vy = (dy / dist) * speed;
     this.ball.ownerId = null;
     this.lastToucherId = p.id;
+    this.passInFlight[p.side] = { targetId: target.id, msLeft: 2500 };
     events.push({ kind: "pass", playerId: p.id, targetId: target.id });
   }
 
@@ -712,33 +733,52 @@ export class Match {
     this.lastToucherId = p.id;
   }
 
-  /** 사람이 조작할 선수를 상황에 맞게 넘긴다. */
+  /**
+   * 사람이 조작할 선수를 상황에 맞게 넘긴다.
+   *
+   * 1. 동료가 공을 잡으면 바로 그 선수로 넘긴다(패스를 받으면 이어서 조작하게 된다).
+   * 2. 그 밖에는 손을 놓고 있고, 공에서 멀리 떨어져 있으며, 훨씬 가까운 동료가 있을 때만 넘긴다.
+   *    조작 중인 사람에게서 선수를 빼앗지 않는 것이 규칙이다.
+   */
   private updateControl(ms: number, events: SimEvent[]): void {
     for (const side of ["left", "right"] as const) {
+      const flight = this.passInFlight[side];
+      if (flight !== null) {
+        flight.msLeft -= ms;
+        if (flight.msLeft <= 0) this.passInFlight[side] = null;
+      }
       if (!this.humanSides[side]) continue;
       const current = this.controlled[side];
       const owner = this.ball.ownerId ? this.byId.get(this.ball.ownerId) : undefined;
 
-      // 동료가 공을 잡으면 그 선수로 바로 넘긴다
+      if (owner) this.passInFlight[side] = null;
+
+      // 1) 동료가 공을 잡았다
       if (owner && owner.side === side && owner.id !== current) {
         this.setControlled(side, owner.id, events);
         continue;
       }
       if (owner && owner.side === side) continue;
       if (this.switchCooldown[side] > 0) continue;
+      // 패스가 날아가는 동안에는 받을 동료가 잡을 때까지 기다린다
+      if (this.passInFlight[side] !== null) continue;
 
-      // 공을 상대가 가졌거나 흘렀으면 공에 가장 가까운 선수가 맡는다
+      const currentPlayer = this.byId.get(current);
+      // 사람이 조작 중이면 넘기지 않는다
+      if (currentPlayer && isActiveInput(currentPlayer.input)) continue;
+
+      const currentDist = currentPlayer
+        ? len(this.ball.x - currentPlayer.x, this.ball.y - currentPlayer.y)
+        : Infinity;
+      // 공 근처에서 플레이 중이면 그대로 둔다
+      if (currentDist < CONTROL_HANDOVER_DISTANCE) continue;
+
       const nearest = this.nearestToBall(side);
       if (nearest && nearest.id !== current) {
-        const currentPlayer = this.byId.get(current);
-        const currentDist = currentPlayer
-          ? len(this.ball.x - currentPlayer.x, this.ball.y - currentPlayer.y)
-          : Infinity;
         const nearestDist = len(this.ball.x - nearest.x, this.ball.y - nearest.y);
         // 충분히 더 가까울 때만 넘겨서 깜빡임을 막는다
         if (nearestDist < currentDist - 2) this.setControlled(side, nearest.id, events);
       }
-      void ms;
     }
   }
 
@@ -797,7 +837,8 @@ export class Match {
     if (p.skill === "tackle") return "tackle";
     if (p.skill === "stepover") return "stepover";
     if (p.skill === "dragback") return "dragback";
-    if (p.skill === "feintLeft" || p.skill === "feintRight") return "feint";
+    if (p.skill === "feintLeft") return "feintLeft";
+    if (p.skill === "feintRight") return "feintRight";
     if (p.actionAnim === "shoot") return "shoot";
     if (p.actionAnim === "pass") return "pass";
     const speed = len(p.vx, p.vy);
