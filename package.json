@@ -1,0 +1,16 @@
+{
+  "name": "online-soccer",
+  "private": true,
+  "version": "0.1.0",
+  "description": "웹 브라우저 1대1 온라인 미니 축구",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "dev": "pnpm --filter @soccer/web dev",
+    "dev:api": "pnpm --filter @soccer/api dev",
+    "build": "pnpm --filter @soccer/web build && pnpm --filter @soccer/api build",
+    "start": "pnpm --filter @soccer/api start",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @soccer/api test"
+  },
+  "packageManager": "pnpm@11.21.0"
+}

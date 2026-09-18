@@ -1,0 +1,42 @@
+# 의존성
+node_modules/
+.pnpm-store/
+
+# 빌드 산출물
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+
+# 테스트·리포트
+coverage/
+test-results/
+playwright-report/
+.nyc_output/
+
+# 환경변수·시크릿
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+secrets/
+
+# 로그·임시
+*.log
+logs/
+tmp/
+.tmp/
+.cache/
+
+# OS·IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# OMC 운영 산출물
+.omc/
