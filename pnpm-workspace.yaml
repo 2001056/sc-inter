@@ -1,2 +1,6 @@
 packages:
   - "app/*"
+
+# Vite 가 쓰는 esbuild 는 네이티브 바이너리 설치 스크립트가 필요하다
+allowBuilds:
+  esbuild: true
