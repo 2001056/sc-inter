@@ -72,17 +72,29 @@ export class InputController {
   /** HUD 가 "지금 개인기 모드" 를 보여 줄 수 있게 Shift 상태를 들고 있는다. */
   private shiftDown = false;
   private shiftListener: ((down: boolean) => void) | null = null;
+  /** 모든 키를 놓은 상태가 됐을 때 부르는 콜백. 서버에 즉시 중립 입력을 보내는 데 쓴다. */
+  private releaseListener: (() => void) | null = null;
+
+  /**
+   * 글자를 입력하는 칸에 포커스가 있으면 게임 조작으로 가로채지 않는다.
+   * 닉네임 칸에서 D 를 눌렀는데 슛이 나가면 안 된다.
+   */
+  private isTyping(target: EventTarget | null): boolean {
+    if (!(target instanceof HTMLElement)) return false;
+    if (target.isContentEditable) return true;
+    const tag = target.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT";
+  }
 
   attach(target: Window = window): () => void {
     const onKeyDown = (ev: KeyboardEvent) => {
-      if (ev.key === "Shift") {
-        this.shiftDown = true;
-        this.shiftListener?.(true);
-        return;
-      }
-      if (ev.repeat) return;
+      if (this.isTyping(ev.target)) return;
+      // Shift 상태는 매 이벤트마다 다시 읽는다. 창을 오갈 때 눌림/뗌을 놓쳐도 어긋나지 않는다.
+      this.syncShift(ev.shiftKey);
+      if (ev.key === "Shift") return;
+
       if (ev.code === "KeyV") {
-        this.cameraToggleHandler?.();
+        if (!ev.repeat) this.cameraToggleHandler?.();
         return;
       }
       if (!this.enabled) return;
@@ -91,8 +103,16 @@ export class InputController {
       if (move) {
         // 방향키는 페이지를 스크롤시키므로 막는다.
         ev.preventDefault();
-        if (this.shiftDown || ev.shiftKey) this.pendingSkill = this.toWorld(SCREEN_DIR[move]);
-        else this.held.add(move);
+        /*
+         * 자동 반복(ev.repeat)도 버리지 않고 눌림 상태를 다시 세운다.
+         * 어떤 이유로든 keyup 을 놓쳐 상태가 어긋나도 다음 반복에서 스스로 복구된다.
+         * 예전에는 Shift 를 누른 채 방향키를 쓰면 그 방향키가 `held` 에 들어가지
+         * 못한 채 keyup 만 처리돼, 키를 계속 누르고 있는데도 이동이 0 으로 멈췄다.
+         */
+        this.held.add(move);
+        // 개인기는 누르는 순간 한 번만. 다만 이동은 그대로 이어진다
+        // (실제 축구에서도 달리면서 스텝오버를 한다).
+        if (!ev.repeat && ev.shiftKey) this.pendingSkill = this.toWorld(SCREEN_DIR[move]);
         return;
       }
 
@@ -102,17 +122,21 @@ export class InputController {
         return;
       }
 
+      if (ev.repeat) return;
       if (ev.code === "KeyS") this.pendingPass = true;
       else if (ev.code === "KeyQ") this.pendingTackle = true;
       else if (ev.code === "KeyC") this.pendingSwitch = true;
     };
 
     const onKeyUp = (ev: KeyboardEvent) => {
-      if (ev.key === "Shift") {
-        this.shiftDown = false;
-        this.shiftListener?.(false);
-        return;
-      }
+      /*
+       * 뗌은 글자 입력 칸에서 올라와도 반드시 처리한다.
+       * 방향키를 누른 채 입력 칸을 클릭하고 거기서 손을 떼면 keyup 이 그 칸에서
+       * 올라오는데, 이때 무시해 버리면 그 방향이 영영 눌린 채로 남는다.
+       * 가로채지 않는 것은 "누름" 뿐이다.
+       */
+      this.syncShift(ev.key === "Shift" ? false : ev.shiftKey);
+      if (ev.key === "Shift") return;
       const move = MOVE_KEYS[ev.code];
       if (move) {
         this.held.delete(move);
@@ -122,21 +146,65 @@ export class InputController {
       if (hold) this.held.delete(hold);
     };
 
-    // 탭을 벗어나면 키를 누른 채로 멈춰 버리므로 전부 놓은 것으로 본다.
+    /*
+     * 창을 벗어나면 keyup 이 오지 않는다. 그대로 두면 선수가 계속 달린다.
+     * 전부 놓은 것으로 보고, 다음 전송 주기를 기다리지 않고 바로 중립 입력을 내보낸다.
+     * 탭을 숨기면 requestAnimationFrame 이 멈춰 전송 자체가 서지 않으므로
+     * visibilitychange 도 같이 본다.
+     */
     const onBlur = () => {
-      this.shiftDown = false;
-      this.shiftListener?.(false);
+      this.syncShift(false);
       this.releaseAll();
+      this.releaseListener?.();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") onBlur();
     };
 
     target.addEventListener("keydown", onKeyDown);
     target.addEventListener("keyup", onKeyUp);
     target.addEventListener("blur", onBlur);
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       target.removeEventListener("keydown", onKeyDown);
       target.removeEventListener("keyup", onKeyUp);
       target.removeEventListener("blur", onBlur);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
+  }
+
+  /** 입력이 전부 풀렸을 때 즉시 알림을 받는다. */
+  onRelease(handler: (() => void) | null): void {
+    this.releaseListener = handler;
+  }
+
+  private syncShift(down: boolean): void {
+    if (this.shiftDown === down) return;
+    this.shiftDown = down;
+    /*
+     * 방향키를 이미 누르고 있다가 Shift 를 나중에 누르는 것이 실제로 가장 흔한 순서다
+     * ("달리다가 스텝오버"). 이때는 새 방향키 keydown 이 오지 않으므로
+     * Shift 가 눌리는 순간 지금 향하고 있는 방향으로 개인기를 건다.
+     * 반대 순서(Shift 먼저, 방향키 나중)는 방향키 keydown 쪽에서 처리한다.
+     */
+    if (down && this.enabled) {
+      const direction = this.heldDirection();
+      if (direction) this.pendingSkill = this.toWorld(direction);
+    }
+    this.shiftListener?.(down);
+  }
+
+  /** 지금 눌려 있는 방향키를 화면 기준 단위 벡터 하나로 모은다. 없으면 null. */
+  private heldDirection(): [number, number] | null {
+    let forward = 0;
+    let strafe = 0;
+    if (this.held.has("up")) forward += 1;
+    if (this.held.has("down")) forward -= 1;
+    if (this.held.has("right")) strafe += 1;
+    if (this.held.has("left")) strafe -= 1;
+    const len = Math.hypot(forward, strafe);
+    if (len < 1e-6) return null;
+    return [forward / len, strafe / len];
   }
 
   /** 화면 기준 (앞, 오른쪽) 을 경기장 월드 좌표 (x, y) 로 바꾼다. */

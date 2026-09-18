@@ -97,12 +97,16 @@ export function MatchView(props: Props): React.ReactElement {
     input.onCameraToggle(() => {
       cameraModeRef.current = cameraModeRef.current === "follow" ? "broadcast" : "follow";
     });
+    // 창을 벗어나거나 탭이 숨으면 렌더 루프가 멈춰 전송도 선다.
+    // 그 전에 "아무것도 누르지 않은 상태" 를 한 번 보내 선수가 계속 달리지 않게 한다.
+    input.onRelease(() => connection.sendInput(input.poll()));
     return () => {
       detach();
       input.onCameraToggle(null);
+      input.onRelease(null);
       input.setEnabled(false);
     };
-  }, [input]);
+  }, [connection, input]);
 
   // 카운트다운·종료 중에는 입력을 서버가 무시하므로 화면도 받지 않는다.
   useEffect(() => {
@@ -207,7 +211,7 @@ export function MatchView(props: Props): React.ReactElement {
   const humans = room?.players.filter((p) => !p.bot).length ?? 1;
 
   return (
-    <div className="match">
+    <div className={touchUi ? "match match--touch" : "match"}>
       <canvas className="match__canvas" ref={canvasRef} />
 
       <Hud
@@ -224,7 +228,11 @@ export function MatchView(props: Props): React.ReactElement {
         <Minimap pitch={pitch} mySide={mySide} readFrame={readFrame} />
       </Hud>
 
-      {touchUi && phase === "playing" ? <TouchControls input={input} /> : null}
+      {/*
+        경기 중에는 계속 띄운다. 킥오프 카운트다운마다 사라졌다 나타나면 손이 헤맨다.
+        입력 자체는 phase 에 따라 막혀 있으므로 눌려도 서버로 나가지 않는다.
+      */}
+      {touchUi && phase !== "waiting" && phase !== "ended" ? <TouchControls input={input} /> : null}
 
       {banner ? <p className="banner">{banner.text}</p> : null}
       {copied ? <p className="banner">{copied}</p> : null}

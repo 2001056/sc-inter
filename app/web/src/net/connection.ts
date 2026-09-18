@@ -33,6 +33,30 @@ export interface ConnectionHandlers {
 const MAX_RETRIES = 8;
 const PING_INTERVAL_MS = 3_000;
 
+/*
+ * 재접속 토큰은 sessionStorage 에 둔다.
+ * 새로고침해도 같은 탭이면 같은 자리로 돌아갈 수 있고, 탭을 닫으면 사라진다.
+ * localStorage 를 쓰면 다른 탭이 같은 자리를 빼앗으려 할 수 있어 쓰지 않는다.
+ */
+const TOKEN_KEY = "sc-inter:token";
+
+function readToken(): string | null {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeToken(token: string | null): void {
+  try {
+    if (token === null) sessionStorage.removeItem(TOKEN_KEY);
+    else sessionStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // 시크릿 모드에서는 저장이 막힌다. 메모리에 든 토큰만으로도 재접속은 된다.
+  }
+}
+
 function socketUrl(): string {
   const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${protocol}//${window.location.host}/ws`;
@@ -57,21 +81,62 @@ export class Connection {
     this.stop();
     this.closedByUser = false;
     this.intent = intent;
-    this.token = null;
+    this.setToken(null);
     this.retries = 0;
     this.inputSeq = 0;
     this.open();
   }
 
-  /** 사용자가 직접 방을 나갈 때. 재접속하지 않는다. */
+  /**
+   * 새로고침 직후 부른다. 지난 탭 세션에서 받은 토큰이 있으면 그 자리로 돌아간다.
+   * 토큰이 없거나 만료됐으면 아무 일도 일어나지 않고 로비에 머문다.
+   */
+  resumeIfPossible(): boolean {
+    const token = readToken();
+    if (!token) return false;
+    this.stop();
+    this.closedByUser = false;
+    this.intent = { t: "resume", token };
+    this.token = token;
+    this.retries = 0;
+    this.inputSeq = 0;
+    this.open();
+    return true;
+  }
+
+  private setToken(token: string | null): void {
+    this.token = token;
+    writeToken(token);
+  }
+
+  /**
+   * 사용자가 직접 방을 나갈 때. 자리를 비우고 토큰도 버린다.
+   * 새로고침으로 되돌아올 여지를 남기지 않는다.
+   */
+  leave(): void {
+    const socket = this.socket;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      this.rawSend(socket, { t: "leave" });
+    }
+    this.setToken(null);
+    this.stop();
+  }
+
+  /**
+   * 연결만 닫는다. 토큰은 건드리지 않으므로 새로고침 뒤 같은 자리로 돌아올 수 있다.
+   * 컴포넌트 정리에서 부른다.
+   */
   stop(): void {
     this.closedByUser = true;
     this.clearTimers();
     const socket = this.socket;
     this.socket = null;
-    if (socket && socket.readyState === WebSocket.OPEN) {
-      this.rawSend(socket, { t: "leave" });
-    }
+    /*
+     * 여기서 `leave` 를 보내면 안 된다. 서버가 자리를 즉시 비워 버려서
+     * 저장해 둔 토큰이 쓸모없어지고 새로고침 복귀가 깨진다.
+     * 연결만 끊으면 서버는 30초 동안 자리를 지켜 준다.
+     * 방을 진짜로 떠나는 것은 `leave()` 뿐이다.
+     */
     socket?.close();
     this.setStatus("idle");
   }
@@ -145,7 +210,7 @@ export class Connection {
   private dispatch(msg: ServerMessage): void {
     switch (msg.t) {
       case "joined":
-        this.token = msg.token;
+        this.setToken(msg.token);
         this.handlers.onJoined(msg);
         return;
       case "room":
@@ -162,7 +227,7 @@ export class Connection {
         return;
       case "error":
         // 토큰이 만료됐으면 재접속으로는 못 살린다. 처음 의도로 되돌린다.
-        if (msg.code === "TOKEN_INVALID") this.token = null;
+        if (msg.code === "TOKEN_INVALID") this.setToken(null);
         if (msg.code === "RATE_LIMITED" || msg.code === "SERVER_BUSY") {
           this.closedByUser = true;
         }
