@@ -4,13 +4,13 @@
 
 ## 1. 프로젝트 한 줄
 
-브라우저에서 두 사람이 인터넷을 통해 1대1로 즐기는 미니 축구 게임. 서버가 경기 상태의 유일한 권위(authoritative)이고, 브라우저는 입력 전송과 렌더링만 한다.
+브라우저에서 두 사람이 인터넷을 통해 1대1로 즐기는 3D 축구 게임. 실제 사람 비율의 선수가 드리블·스프린트·개인기를 쓴다. 서버가 경기 상태의 유일한 권위(authoritative)이고, 브라우저는 입력 전송과 렌더링만 한다.
 
 ## 2. 구조
 
 ```
 app/api/src   Node + TypeScript. WebSocket 실시간 서버 + 정적 웹 서빙(동일 origin)
-app/web/src   React + TypeScript + Vite. 로비 화면과 Canvas 경기 화면
+app/web/src   React + TypeScript + Vite + Three.js. 로비 화면과 3D 경기 화면
 docs/         사람과 AI의 공동 SSOT (한글 폴더·파일명)
 ```
 
@@ -28,6 +28,7 @@ docs/         사람과 AI의 공동 SSOT (한글 폴더·파일명)
 ## 4. 승인 경계
 
 - 로컬 실행·테스트·의존성 설치·커밋·`origin` push: 승인됨.
+- Git 조작(stage/commit/push)은 통합 담당 한 사람만 수행한다.
 - 실제 배포, 공개 터널(ngrok 등), 운영 환경 변경: 사람의 별도 승인 전에는 실행하지 않는다.
 
 ## 5. 문서 지도

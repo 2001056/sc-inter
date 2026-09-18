@@ -109,7 +109,7 @@ test("충전해서 찬 공이 오른쪽 골대로 들어가 왼쪽이 득점한�
   assert.ok(goal, "골 이벤트가 나와야 한다");
   assert.equal(goal.kind === "goal" ? goal.side : null, "left");
   assert.equal(m.score.left, 1);
-  assert.notEqual(m.phase, "playing");
+  assert.equal(m.score.right, 0);
 });
 
 test("득점 뒤에는 세리머니를 거쳐 다시 카운트다운으로 간다", () => {

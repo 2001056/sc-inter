@@ -3,20 +3,22 @@
  * 단위는 실제 사람 기준의 미터/초다(3D 렌더러가 그대로 월드 단위로 쓸 수 있게).
  */
 
-/** 5인제 규모의 소형 경기장. 실제 사람 비율과 카메라 워크를 고려한 크기. */
+/**
+ * 풋살장 규모의 경기장. 1대1에서 한쪽 끝까지 약 7초가 걸리도록 잡았고,
+ * 실제 사람 비율(키 1.8m)과 3D 카메라 워크를 함께 고려했다.
+ */
 export const PITCH = {
-  length: 64,
-  width: 42,
-  /** 정규 골대 폭 7.32m */
-  goalWidth: 7.32,
-  goalDepth: 2,
+  length: 42,
+  width: 25,
+  goalWidth: 4,
+  goalDepth: 1.5,
 } as const;
 
 export const PLAYER = {
   /** 어깨 폭 기준 충돌 반지름 */
-  radius: 0.45,
+  radius: 0.42,
   /** 렌더러가 참고하는 키 */
-  height: 1.82,
+  height: 1.8,
   accel: 48,
   runSpeed: 6.6,
   sprintSpeed: 9.1,
