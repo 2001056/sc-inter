@@ -8,7 +8,8 @@
 | 영역 | 상태 |
 | --- | --- |
 | `app/api` (서버) | 3대3 권위 시뮬레이션·WebSocket·정적 서빙·health·graceful shutdown 완성. 테스트 50개 통과 |
-| `app/web` (3D 화면) | 별도 담당이 작업 중 |
+| `app/web` (3D 화면) | 로비·3D 경기 화면 동작. 선수 메시 품질 보완 진행 중 |
+| 통합 | 단일 프로세스(8787)로 웹+WebSocket 서빙, 두 브라우저 E2E 통과, Docker 이미지 기동 확인 |
 | 배포 구성 | `Dockerfile`, `compose.yaml` 준비. 실제 배포·공개 터널은 **미실행(사람 승인 대기)** |
 | 저장소 | `github.com/2001056/sc-inter` `main` 에 기능 단위로 push |
 
