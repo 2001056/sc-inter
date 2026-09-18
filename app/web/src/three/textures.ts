@@ -198,8 +198,9 @@ export function jerseyTexture(kit: KitColors, number: number): THREE.CanvasTextu
   ctx.lineWidth = 10;
   ctx.strokeStyle = "rgba(0,0,0,0.35)";
   ctx.fillStyle = kit.accent;
-  // 원통 UV 는 u 가 커질수록 화면 왼쪽으로 감기므로 좌우를 뒤집어 그려야 바로 읽힌다.
-  ctx.scale(-1, -1);
+  // 텍스처는 업로드할 때 세로로 뒤집히므로(flipY) 캔버스에서 미리 뒤집어 그린다.
+  // 가로는 뒤집지 않는다. 실제 렌더에서 u 는 화면 오른쪽으로 증가한다.
+  ctx.scale(1, -1);
   ctx.strokeText(String(number), 0, 0);
   ctx.fillText(String(number), 0, 0);
   ctx.restore();
@@ -207,12 +208,12 @@ export function jerseyTexture(kit: KitColors, number: number): THREE.CanvasTextu
   // 가슴 쪽(u=0.25)에는 작은 마크.
   ctx.save();
   ctx.translate(w * 0.25, h * 0.62);  // 가슴
-  ctx.scale(-1, -1);
+  ctx.scale(1, -1);
   ctx.fillStyle = kit.accent;
   ctx.font = `700 ${Math.round(h * 0.1)}px "Helvetica Neue", Arial, sans-serif`;
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
-  ctx.fillText("R", 0, 0);
+  ctx.fillText("SC", 0, 0);
   ctx.restore();
 
   return finish(element);

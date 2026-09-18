@@ -119,12 +119,18 @@ export function sweep(part: PartBuffers, sections: Section[], options: SweepOpti
     for (let j = 0; j <= segments; j += 1) part.uv.push(j / segments, v);
   }
 
-  // 링과 링 사이를 사각형으로 잇는다.
+  /*
+   * 링과 링 사이를 사각형으로 잇는다.
+   * 감는 방향이 중요하다. 단면 링은 (법선, 종법선) 평면에서 반시계로 돌고
+   * 종법선을 `접선 x 법선` 으로 잡았기 때문에, 순진하게 (a, b, a+1) 로 감으면
+   * 삼각형 법선이 관 **안쪽**을 향한다. 그러면 바깥에서 볼 때 앞면이 잘려 나가
+   * 반대편 안쪽 벽이 비쳐 보이고(옷이 찢어진 것처럼 보인다) 조명도 뒤집힌다.
+   */
   for (let i = 0; i < pts.length - 1; i += 1) {
     for (let j = 0; j < segments; j += 1) {
       const a = base + i * (segments + 1) + j;
       const b = a + segments + 1;
-      part.index.push(a, b, a + 1, a + 1, b, b + 1);
+      part.index.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
 
@@ -194,11 +200,12 @@ export function ellipsoid(
       part.uv.push(u, 1 - v);
     }
   }
+  // 관과 같은 이유로 바깥을 향하도록 감는다.
   for (let iy = 0; iy < hs; iy += 1) {
     for (let ix = 0; ix < ws; ix += 1) {
       const a = base + iy * (ws + 1) + ix;
       const b = a + ws + 1;
-      part.index.push(a, b, a + 1, a + 1, b, b + 1);
+      part.index.push(a, a + 1, b, a + 1, b + 1, b);
     }
   }
 }
