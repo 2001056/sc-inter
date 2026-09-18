@@ -1,5 +1,5 @@
 /**
- * 권위 시뮬레이션. 순수 로직만 담고 네트워크는 모른다.
+ * 권위 시뮬레이션(3대3). 순수 로직만 담고 네트워크는 모른다.
  * 같은 입력 순서를 주면 같은 결과가 나오므로 테스트에서 그대로 검증한다.
  */
 import {
@@ -7,15 +7,20 @@ import {
   DRIBBLE,
   GOAL_BOTTOM,
   GOAL_TOP,
-  KICK,
   MATCH,
+  PASS,
   PITCH,
   PLAYER,
+  ROLES,
+  SHOOT,
   SKILL,
-  SPAWN,
   STAMINA,
+  attackDirX,
+  spawnFor,
+  type Role,
   type Side,
 } from "./constants.ts";
+import { aiInput } from "./ai.ts";
 import type {
   AnimState,
   BallView,
@@ -30,27 +35,33 @@ import type {
 
 export type SimEvent =
   | { kind: "kickoff" }
-  | { kind: "goal"; side: Side; score: Score }
+  | { kind: "goal"; side: Side; scorerId: string; score: Score }
   | { kind: "matchEnd"; result: MatchResult; score: Score }
-  | { kind: "kick"; side: Side; power: number }
-  | { kind: "skill"; side: Side; skill: SkillKind; beat: boolean };
+  | { kind: "shoot"; playerId: string; power: number }
+  | { kind: "pass"; playerId: string; targetId: string | null }
+  | { kind: "skill"; playerId: string; skill: SkillKind; beat: boolean }
+  | { kind: "control"; side: Side; playerId: string };
 
 export const NEUTRAL_INPUT: InputState = {
   seq: 0,
   ax: 0,
   ay: 0,
-  kick: false,
   sprint: false,
-  skill: null,
+  shoot: false,
+  pass: false,
+  tackle: false,
+  skillDir: null,
+  switchPlayer: false,
 };
 
-interface Vec {
-  x: number;
-  y: number;
+export function neutralInput(): InputState {
+  return { ...NEUTRAL_INPUT };
 }
 
-class Player {
+export class Player {
+  readonly id: string;
   readonly side: Side;
+  readonly role: Role;
   x = 0;
   y = 0;
   vx = 0;
@@ -59,45 +70,60 @@ class Player {
   stamina = 1;
   sprinting = false;
   chargeMs = 0;
-  kickCooldownMs = 0;
-  kickAnimMs = 0;
+  shootCdMs = 0;
+  passCdMs = 0;
+  /** 슛·패스 모션을 잠깐 보여주기 위한 타이머 */
+  actionAnim: "shoot" | "pass" | null = null;
+  actionAnimMs = 0;
   skill: SkillKind | null = null;
   skillMs = 0;
   skillDirX = 0;
   skillDirY = 0;
-  slidePoked = false;
+  skillCdMs = 0;
+  tackleCdMs = 0;
+  tacklePoked = false;
   proneMs = 0;
   staggerMs = 0;
-  stepoverCdMs = 0;
-  slideCdMs = 0;
   dribbling = false;
   celebrating = false;
-  input: InputState = { ...NEUTRAL_INPUT };
+  input: InputState = neutralInput();
   lastSeq = -1;
-  prevKick = false;
+  prevShoot = false;
+  /** AI 가 쓰는 짧은 기억 */
+  aiTimerMs = 0;
+  aiNoise = 0;
+  aiChargeMs = 0;
 
-  constructor(side: Side) {
+  constructor(id: string, side: Side, role: Role) {
+    this.id = id;
     this.side = side;
+    this.role = role;
     this.facing = side === "left" ? 0 : Math.PI;
-    this.resetTo(SPAWN[side]);
+    const spawn = spawnFor(side, role);
+    this.x = spawn.x;
+    this.y = spawn.y;
   }
 
-  resetTo(pos: Vec): void {
-    this.x = pos.x;
-    this.y = pos.y;
+  resetToSpawn(): void {
+    const spawn = spawnFor(this.side, this.role);
+    this.x = spawn.x;
+    this.y = spawn.y;
     this.vx = 0;
     this.vy = 0;
     this.facing = this.side === "left" ? 0 : Math.PI;
     this.chargeMs = 0;
-    this.kickCooldownMs = 0;
-    this.kickAnimMs = 0;
+    this.shootCdMs = 0;
+    this.passCdMs = 0;
+    this.actionAnim = null;
+    this.actionAnimMs = 0;
     this.skill = null;
     this.skillMs = 0;
     this.proneMs = 0;
     this.staggerMs = 0;
     this.dribbling = false;
-    this.prevKick = false;
-    this.input = { ...NEUTRAL_INPUT, seq: this.input.seq };
+    this.prevShoot = false;
+    this.celebrating = false;
+    this.input = neutralInput();
   }
 
   get busy(): boolean {
@@ -113,6 +139,10 @@ function clamp(v: number, lo: number, hi: number): number {
   return v < lo ? lo : v > hi ? hi : v;
 }
 
+function round(v: number): number {
+  return Math.round(v * 1000) / 1000;
+}
+
 export class Match {
   phase: Phase = "waiting";
   tick = 0;
@@ -122,12 +152,44 @@ export class Match {
   celebrationMs = 0;
   result: MatchResult | null = null;
 
-  readonly players: Record<Side, Player> = {
-    left: new Player("left"),
-    right: new Player("right"),
-  };
+  readonly players: Player[] = [];
+  readonly byId = new Map<string, Player>();
+  /** 팀마다 사람이 조작 중인 선수. 사람이 없으면 AI 가 그 선수도 맡는다. */
+  controlled: Record<Side, string>;
+  /** 그 팀에 사람이 앉아 있는지 */
+  humanSides: Record<Side, boolean> = { left: false, right: false };
 
-  ball: BallView = { x: PITCH.length / 2, y: PITCH.width / 2, vx: 0, vy: 0, spin: 0 };
+  ball: BallView = {
+    x: PITCH.length / 2,
+    y: PITCH.width / 2,
+    vx: 0,
+    vy: 0,
+    spin: 0,
+    ownerId: null,
+  };
+  lastToucherId: string | null = null;
+
+  private switchCooldown: Record<Side, number> = { left: 0, right: 0 };
+
+  constructor() {
+    for (const side of ["left", "right"] as const) {
+      ROLES.forEach((role, i) => {
+        const id = `${side === "left" ? "L" : "R"}${i + 1}`;
+        const p = new Player(id, side, role);
+        this.players.push(p);
+        this.byId.set(id, p);
+      });
+    }
+    this.controlled = { left: "L3", right: "R3" };
+  }
+
+  team(side: Side): Player[] {
+    return this.players.filter((p) => p.side === side);
+  }
+
+  controlledPlayer(side: Side): Player {
+    return this.byId.get(this.controlled[side]) ?? this.team(side)[0]!;
+  }
 
   /** 대기 상태에서 킥오프 카운트다운으로 들어간다. */
   startMatch(): void {
@@ -140,33 +202,43 @@ export class Match {
   }
 
   resetPositions(): void {
-    this.players.left.resetTo(SPAWN.left);
-    this.players.right.resetTo(SPAWN.right);
-    this.players.left.stamina = Math.max(this.players.left.stamina, 0.7);
-    this.players.right.stamina = Math.max(this.players.right.stamina, 0.7);
-    this.players.left.celebrating = false;
-    this.players.right.celebrating = false;
-    this.ball = { x: PITCH.length / 2, y: PITCH.width / 2, vx: 0, vy: 0, spin: 0 };
+    for (const p of this.players) {
+      p.resetToSpawn();
+      p.stamina = Math.max(p.stamina, 0.7);
+    }
+    this.ball = {
+      x: PITCH.length / 2,
+      y: PITCH.width / 2,
+      vx: 0,
+      vy: 0,
+      spin: 0,
+      ownerId: null,
+    };
+    this.lastToucherId = null;
+    this.controlled = { left: "L3", right: "R3" };
   }
 
   setInput(side: Side, input: InputState): void {
-    const p = this.players[side];
+    const p = this.controlledPlayer(side);
     if (input.seq <= p.lastSeq) return;
-    p.lastSeq = input.seq;
+    // 조작 선수가 바뀌어도 seq 흐름이 끊기지 않게 팀 단위로 기억한다
+    for (const mate of this.team(side)) mate.lastSeq = input.seq;
     p.input = input;
+    if (input.switchPlayer) this.manualSwitch(side);
   }
 
-  /** seq 순서를 무시하고 입력을 덮어쓴다(봇, 접속 끊김 처리용). */
+  /** seq 순서를 무시하고 입력을 덮어쓴다(접속 끊김 처리용). */
   forceInput(side: Side, input: InputState): void {
-    this.players[side].input = input;
+    this.controlledPlayer(side).input = input;
   }
 
   /** 재접속한 선수의 입력 순서를 초기화한다. */
   resetInputSeq(side: Side): void {
-    const p = this.players[side];
-    p.lastSeq = -1;
-    p.input = { ...NEUTRAL_INPUT };
-    p.prevKick = false;
+    for (const p of this.team(side)) {
+      p.lastSeq = -1;
+      p.input = neutralInput();
+      p.prevShoot = false;
+    }
   }
 
   /** dt 초만큼 진행하고 이번 틱에 일어난 사건을 돌려준다. */
@@ -201,18 +273,22 @@ export class Match {
     if (this.phase !== "playing") return events;
 
     this.decayTimers(ms);
-    for (const side of ["left", "right"] as const) {
-      this.stepPlayer(this.players[side], dt, events);
+    for (const p of this.players) {
+      const input = this.inputFor(p);
+      this.stepPlayer(p, input, dt, events);
     }
-    this.resolvePlayerCollision();
+    this.resolvePlayerCollisions();
     this.stepBall(dt);
+    this.updateControl(ms, events);
+
     const scored = this.detectGoal();
     if (scored !== null) {
       this.score[scored] += 1;
       this.phase = "goal";
       this.celebrationMs = MATCH.goalCelebrationMs;
-      this.players[scored].celebrating = true;
-      events.push({ kind: "goal", side: scored, score: { ...this.score } });
+      const scorerId = this.lastToucherId ?? this.controlled[scored];
+      for (const p of this.team(scored)) p.celebrating = true;
+      events.push({ kind: "goal", side: scored, scorerId, score: { ...this.score } });
       return events;
     }
 
@@ -231,20 +307,29 @@ export class Match {
     return events;
   }
 
+  /** 사람이 조작하는 선수면 사람 입력, 나머지는 AI 입력 */
+  private inputFor(p: Player): InputState {
+    if (this.humanSides[p.side] && this.controlled[p.side] === p.id) return p.input;
+    return aiInput(this, p);
+  }
+
   private decayTimers(ms: number): void {
-    for (const side of ["left", "right"] as const) {
-      const p = this.players[side];
-      p.kickCooldownMs = Math.max(0, p.kickCooldownMs - ms);
-      p.kickAnimMs = Math.max(0, p.kickAnimMs - ms);
-      p.stepoverCdMs = Math.max(0, p.stepoverCdMs - ms);
-      p.slideCdMs = Math.max(0, p.slideCdMs - ms);
+    for (const p of this.players) {
+      p.shootCdMs = Math.max(0, p.shootCdMs - ms);
+      p.passCdMs = Math.max(0, p.passCdMs - ms);
+      p.actionAnimMs = Math.max(0, p.actionAnimMs - ms);
+      if (p.actionAnimMs === 0) p.actionAnim = null;
+      p.skillCdMs = Math.max(0, p.skillCdMs - ms);
+      p.tackleCdMs = Math.max(0, p.tackleCdMs - ms);
       p.staggerMs = Math.max(0, p.staggerMs - ms);
       p.proneMs = Math.max(0, p.proneMs - ms);
     }
+    for (const side of ["left", "right"] as const) {
+      this.switchCooldown[side] = Math.max(0, this.switchCooldown[side] - ms);
+    }
   }
 
-  private stepPlayer(p: Player, dt: number, events: SimEvent[]): void {
-    const input = p.input;
+  private stepPlayer(p: Player, input: InputState, dt: number, events: SimEvent[]): void {
     let ax = input.ax;
     let ay = input.ay;
     const mag = len(ax, ay);
@@ -254,19 +339,18 @@ export class Match {
     }
     const moving = mag > 0.05;
 
-    // 개인기 시도
-    if (input.skill !== null && !p.busy) {
-      this.tryStartSkill(p, input.skill, ax, ay, moving, events);
-      p.input = { ...input, skill: null };
-    }
+    if (input.tackle && !p.busy) this.tryTackle(p, events);
+    if (input.skillDir !== null && !p.busy) this.trySkill(p, input.skillDir, events);
 
     if (p.skill !== null) {
       p.skillMs -= dt * 1000;
-      p.vx = p.skillDirX * this.skillSpeed(p);
-      p.vy = p.skillDirY * this.skillSpeed(p);
-      if (p.skill === "slide") this.applySlidePoke(p);
+      const speed = this.skillSpeed(p);
+      p.vx = p.skillDirX * speed;
+      p.vy = p.skillDirY * speed;
+      if (p.skill === "tackle") this.applyTacklePoke(p);
+      if (p.skill === "dragback") this.applyDragback(p, dt);
       if (p.skillMs <= 0) {
-        if (p.skill === "slide") p.proneMs = SKILL.slide.proneMs;
+        if (p.skill === "tackle") p.proneMs = SKILL.tackle.proneMs;
         p.skill = null;
         p.skillMs = 0;
       }
@@ -274,7 +358,6 @@ export class Match {
       p.vx -= p.vx * 8 * dt;
       p.vy -= p.vy * 8 * dt;
     } else {
-      // 스프린트와 스태미나
       const wantsSprint = input.sprint && moving && p.stamina > STAMINA.sprintFloor;
       p.sprinting = wantsSprint;
       p.stamina = clamp(
@@ -300,15 +383,13 @@ export class Match {
         p.vy = (p.vy / speed) * maxSpeed;
       }
 
-      // 슛 충전과 발사
-      if (input.kick && p.kickCooldownMs <= 0) {
-        p.chargeMs = Math.min(KICK.chargeMs, p.chargeMs + dt * 1000);
+      if (input.shoot && p.shootCdMs <= 0) {
+        p.chargeMs = Math.min(SHOOT.chargeMs, p.chargeMs + dt * 1000);
       }
-      if (p.prevKick && !input.kick) {
-        this.tryKick(p, events);
-      }
+      if (p.prevShoot && !input.shoot) this.tryShoot(p, events);
+      if (input.pass && p.passCdMs <= 0) this.tryPass(p, events);
     }
-    p.prevKick = input.kick;
+    p.prevShoot = input.shoot;
 
     p.x += p.vx * dt;
     p.y += p.vy * dt;
@@ -317,127 +398,244 @@ export class Match {
   }
 
   private skillSpeed(p: Player): number {
-    const spec = p.skill === "slide" ? SKILL.slide : SKILL.stepover;
-    const total = p.skill === "slide" ? SKILL.slide.durationMs : SKILL.stepover.durationMs;
-    // 시작이 가장 빠르고 끝으로 갈수록 느려진다
-    const progress = 1 - clamp(p.skillMs / total, 0, 1);
+    const spec = this.skillSpec(p.skill);
+    const progress = 1 - clamp(p.skillMs / spec.durationMs, 0, 1);
     return spec.burstSpeed * (1 - progress * 0.7);
   }
 
-  private tryStartSkill(
-    p: Player,
-    kind: SkillKind,
-    ax: number,
-    ay: number,
-    moving: boolean,
-    events: SimEvent[],
-  ): void {
-    const opponent = this.players[p.side === "left" ? "right" : "left"];
-    if (kind === "stepover") {
-      if (p.stepoverCdMs > 0 || p.stamina < STAMINA.stepoverCost) return;
-      const fx = Math.cos(p.facing);
-      const fy = Math.sin(p.facing);
-      // 입력 방향이 바라보는 방향의 어느 쪽인지로 좌/우를 정한다
-      const cross = moving ? fx * ay - fy * ax : 0;
-      const sign = cross >= 0 ? 1 : -1;
-      const lx = -fy * sign;
-      const ly = fx * sign;
-      const dx = fx * 0.55 + lx * 0.95;
-      const dy = fy * 0.55 + ly * 0.95;
-      const d = len(dx, dy) || 1;
-      p.skill = "stepover";
-      p.skillMs = SKILL.stepover.durationMs;
-      p.skillDirX = dx / d;
-      p.skillDirY = dy / d;
-      p.stepoverCdMs = SKILL.stepover.cooldownMs;
-      p.stamina = clamp(p.stamina - STAMINA.stepoverCost, 0, 1);
-      const beat = len(opponent.x - p.x, opponent.y - p.y) <= SKILL.stepover.beatRange;
-      if (beat) opponent.staggerMs = SKILL.stepover.staggerMs;
-      events.push({ kind: "skill", side: p.side, skill: "stepover", beat });
-      return;
+  private skillSpec(kind: SkillKind | null): {
+    durationMs: number;
+    burstSpeed: number;
+    beatRange: number;
+    staggerMs: number;
+  } {
+    switch (kind) {
+      case "tackle":
+        return {
+          durationMs: SKILL.tackle.durationMs,
+          burstSpeed: SKILL.tackle.burstSpeed,
+          beatRange: 0,
+          staggerMs: 0,
+        };
+      case "dragback":
+        return SKILL.dragback;
+      case "stepover":
+        return SKILL.stepover;
+      default:
+        return SKILL.feint;
     }
-    if (p.slideCdMs > 0 || p.stamina < STAMINA.slideCost) return;
-    p.skill = "slide";
-    p.skillMs = SKILL.slide.durationMs;
+  }
+
+  /**
+   * 월드 방향 벡터를 그 팀의 공격 방향 기준으로 해석해 개인기를 고른다.
+   * 앞 = 스텝오버, 뒤 = 드래그백, 좌/우 = 바디 페인트.
+   */
+  private classifySkill(p: Player, dirX: number, dirY: number): SkillKind {
+    const d = len(dirX, dirY);
+    if (d < 0.2) return "stepover";
+    const nx = dirX / d;
+    const ny = dirY / d;
+    const fx = attackDirX(p.side);
+    const forward = nx * fx;
+    if (forward > 0.5) return "stepover";
+    if (forward < -0.5) return "dragback";
+    // 공격 방향 기준 왼쪽/오른쪽
+    const cross = fx * ny;
+    return cross < 0 ? "feintLeft" : "feintRight";
+  }
+
+  private trySkill(p: Player, dir: { x: number; y: number }, events: SimEvent[]): void {
+    if (p.skillCdMs > 0 || p.stamina < STAMINA.skillCost) return;
+    const kind = this.classifySkill(p, dir.x, dir.y);
+    const spec = this.skillSpec(kind);
+    const fx = Math.cos(p.facing);
+    const fy = Math.sin(p.facing);
+    let dx: number;
+    let dy: number;
+    if (kind === "stepover") {
+      dx = fx;
+      dy = fy;
+    } else if (kind === "dragback") {
+      dx = -fx;
+      dy = -fy;
+    } else {
+      const sign = kind === "feintLeft" ? -1 : 1;
+      dx = fx * 0.35 + -fy * sign;
+      dy = fy * 0.35 + fx * sign;
+    }
+    const d = len(dx, dy) || 1;
+    p.skill = kind;
+    p.skillMs = spec.durationMs;
+    p.skillDirX = dx / d;
+    p.skillDirY = dy / d;
+    p.skillCdMs = SKILL.moveCooldownMs;
+    p.stamina = clamp(p.stamina - STAMINA.skillCost, 0, 1);
+
+    let beat = false;
+    for (const other of this.players) {
+      if (other.side === p.side) continue;
+      if (len(other.x - p.x, other.y - p.y) <= spec.beatRange) {
+        other.staggerMs = Math.max(other.staggerMs, spec.staggerMs);
+        beat = true;
+      }
+    }
+    events.push({ kind: "skill", playerId: p.id, skill: kind, beat });
+  }
+
+  private tryTackle(p: Player, events: SimEvent[]): void {
+    if (p.tackleCdMs > 0 || p.stamina < STAMINA.tackleCost) return;
+    p.skill = "tackle";
+    p.skillMs = SKILL.tackle.durationMs;
     p.skillDirX = Math.cos(p.facing);
     p.skillDirY = Math.sin(p.facing);
-    p.slidePoked = false;
-    p.slideCdMs = SKILL.slide.cooldownMs;
-    p.stamina = clamp(p.stamina - STAMINA.slideCost, 0, 1);
-    events.push({ kind: "skill", side: p.side, skill: "slide", beat: false });
+    p.tacklePoked = false;
+    p.tackleCdMs = SKILL.tackle.cooldownMs;
+    p.stamina = clamp(p.stamina - STAMINA.tackleCost, 0, 1);
+    events.push({ kind: "skill", playerId: p.id, skill: "tackle", beat: false });
   }
 
-  private applySlidePoke(p: Player): void {
-    if (p.slidePoked) return;
-    const dx = this.ball.x - p.x;
-    const dy = this.ball.y - p.y;
-    if (len(dx, dy) > SKILL.slide.reach + BALL.radius) return;
-    const d = len(dx, dy) || 1;
-    this.ball.vx = (dx / d) * SKILL.slide.poke;
-    this.ball.vy = (dy / d) * SKILL.slide.poke;
-    p.slidePoked = true;
-  }
-
-  private tryKick(p: Player, events: SimEvent[]): void {
-    const charge = p.chargeMs / KICK.chargeMs;
-    p.chargeMs = 0;
-    if (p.kickCooldownMs > 0) return;
-    p.kickCooldownMs = KICK.cooldownMs;
-    p.kickAnimMs = 260;
+  private applyTacklePoke(p: Player): void {
+    if (p.tacklePoked) return;
     const dx = this.ball.x - p.x;
     const dy = this.ball.y - p.y;
     const dist = len(dx, dy);
-    if (dist > PLAYER.radius + BALL.radius + KICK.reach) return;
+    if (dist > SKILL.tackle.reach + BALL.radius) return;
     const d = dist || 1;
-    const nx = dist < 1e-4 ? Math.cos(p.facing) : dx / d;
-    const ny = dist < 1e-4 ? Math.sin(p.facing) : dy / d;
-    const power = KICK.minPower + (KICK.maxPower - KICK.minPower) * clamp(charge, 0, 1);
-    this.ball.vx = nx * power + p.vx * KICK.carry;
-    this.ball.vy = ny * power + p.vy * KICK.carry;
-    events.push({ kind: "kick", side: p.side, power });
+    this.ball.vx = (dx / d) * SKILL.tackle.poke;
+    this.ball.vy = (dy / d) * SKILL.tackle.poke;
+    this.ball.ownerId = null;
+    this.lastToucherId = p.id;
+    p.tacklePoked = true;
   }
 
-  private resolvePlayerCollision(): void {
-    const a = this.players.left;
-    const b = this.players.right;
-    const dx = b.x - a.x;
-    const dy = b.y - a.y;
-    const dist = len(dx, dy);
-    const min = PLAYER.radius * 2;
-    if (dist >= min || dist === 0) return;
-    const nx = dx / dist;
-    const ny = dy / dist;
-    const push = (min - dist) / 2;
-    a.x -= nx * push;
-    a.y -= ny * push;
-    b.x += nx * push;
-    b.y += ny * push;
-    const rel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
-    if (rel < 0) {
-      const j = rel * 0.5;
-      a.vx += j * nx;
-      a.vy += j * ny;
-      b.vx -= j * nx;
-      b.vy -= j * ny;
+  /** 드래그백은 공을 함께 뒤로 끌고 온다. */
+  private applyDragback(p: Player, dt: number): void {
+    const dx = this.ball.x - p.x;
+    const dy = this.ball.y - p.y;
+    if (len(dx, dy) > DRIBBLE.range) return;
+    this.ball.vx += p.skillDirX * SKILL.dragback.ballPull * dt * 10;
+    this.ball.vy += p.skillDirY * SKILL.dragback.ballPull * dt * 10;
+    this.lastToucherId = p.id;
+  }
+
+  private inKickRange(p: Player, reach: number): boolean {
+    const dist = len(this.ball.x - p.x, this.ball.y - p.y);
+    return dist <= PLAYER.radius + BALL.radius + reach;
+  }
+
+  private tryShoot(p: Player, events: SimEvent[]): void {
+    const charge = p.chargeMs / SHOOT.chargeMs;
+    p.chargeMs = 0;
+    if (p.shootCdMs > 0) return;
+    p.shootCdMs = SHOOT.cooldownMs;
+    p.actionAnim = "shoot";
+    p.actionAnimMs = 260;
+    if (!this.inKickRange(p, SHOOT.reach)) return;
+    const power = SHOOT.minPower + (SHOOT.maxPower - SHOOT.minPower) * clamp(charge, 0, 1);
+    const nx = Math.cos(p.facing);
+    const ny = Math.sin(p.facing);
+    this.ball.vx = nx * power + p.vx * SHOOT.carry;
+    this.ball.vy = ny * power + p.vy * SHOOT.carry;
+    this.ball.ownerId = null;
+    this.lastToucherId = p.id;
+    events.push({ kind: "shoot", playerId: p.id, power: round(power) });
+  }
+
+  /** 바라보는 방향에서 가장 받기 좋은 동료 */
+  passTargetFor(p: Player): Player | null {
+    const fx = Math.cos(p.facing);
+    const fy = Math.sin(p.facing);
+    let best: Player | null = null;
+    let bestScore = Infinity;
+    for (const mate of this.players) {
+      if (mate.side !== p.side || mate.id === p.id) continue;
+      const dx = mate.x - p.x;
+      const dy = mate.y - p.y;
+      const dist = len(dx, dy) || 1;
+      const angle = Math.acos(clamp((dx * fx + dy * fy) / dist, -1, 1));
+      if (angle > PASS.maxAngle) continue;
+      const score = angle * 3 + dist * 0.04;
+      if (score < bestScore) {
+        bestScore = score;
+        best = mate;
+      }
+    }
+    return best;
+  }
+
+  private tryPass(p: Player, events: SimEvent[]): void {
+    p.passCdMs = PASS.cooldownMs;
+    p.actionAnim = "pass";
+    p.actionAnimMs = 220;
+    if (!this.inKickRange(p, PASS.reach)) return;
+    const target = this.passTargetFor(p);
+    if (target === null) {
+      const nx = Math.cos(p.facing);
+      const ny = Math.sin(p.facing);
+      this.ball.vx = nx * PASS.fallbackSpeed;
+      this.ball.vy = ny * PASS.fallbackSpeed;
+      this.ball.ownerId = null;
+      this.lastToucherId = p.id;
+      events.push({ kind: "pass", playerId: p.id, targetId: null });
+      return;
+    }
+    // 받는 사람의 진행 방향을 살짝 내다본다
+    const tx = target.x + target.vx * PASS.leadSeconds;
+    const ty = target.y + target.vy * PASS.leadSeconds;
+    const dx = tx - p.x;
+    const dy = ty - p.y;
+    const dist = len(dx, dy) || 1;
+    const speed = clamp(dist * PASS.speedPerMeter + PASS.minSpeed, PASS.minSpeed, PASS.maxSpeed);
+    this.ball.vx = (dx / dist) * speed;
+    this.ball.vy = (dy / dist) * speed;
+    this.ball.ownerId = null;
+    this.lastToucherId = p.id;
+    events.push({ kind: "pass", playerId: p.id, targetId: target.id });
+  }
+
+  private resolvePlayerCollisions(): void {
+    for (let i = 0; i < this.players.length; i += 1) {
+      for (let j = i + 1; j < this.players.length; j += 1) {
+        const a = this.players[i]!;
+        const b = this.players[j]!;
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const dist = len(dx, dy);
+        const min = PLAYER.radius * 2;
+        if (dist >= min || dist === 0) continue;
+        const nx = dx / dist;
+        const ny = dy / dist;
+        const push = (min - dist) / 2;
+        a.x -= nx * push;
+        a.y -= ny * push;
+        b.x += nx * push;
+        b.y += ny * push;
+        const rel = (b.vx - a.vx) * nx + (b.vy - a.vy) * ny;
+        if (rel < 0) {
+          const jImp = rel * 0.5;
+          a.vx += jImp * nx;
+          a.vy += jImp * ny;
+          b.vx -= jImp * nx;
+          b.vy -= jImp * ny;
+        }
+      }
     }
   }
 
   private stepBall(dt: number): void {
     const ball = this.ball;
 
-    // 볼 컨트롤(드리블): 가장 가까운 선수가 공을 발 앞에 붙인다
     const controller = this.findController();
-    for (const side of ["left", "right"] as const) {
-      this.players[side].dribbling = controller?.side === side;
-    }
+    for (const p of this.players) p.dribbling = controller?.id === p.id;
+    ball.ownerId = controller?.id ?? null;
     if (controller) {
+      this.lastToucherId = controller.id;
       const looseness = controller.sprinting ? DRIBBLE.sprintLooseness : 1;
       const tx = controller.x + Math.cos(controller.facing) * DRIBBLE.leadDistance;
       const ty = controller.y + Math.sin(controller.facing) * DRIBBLE.leadDistance;
       const k = DRIBBLE.stiffness * looseness;
       ball.vx += (tx - ball.x) * k * dt;
       ball.vy += (ty - ball.y) * k * dt;
-      // 선수 속도를 일부 따라간다
       ball.vx += (controller.vx - ball.vx) * 2.5 * dt;
       ball.vy += (controller.vy - ball.vy) * 2.5 * dt;
     }
@@ -453,11 +651,8 @@ export class Match {
     ball.y += ball.vy * dt;
     ball.spin = (ball.spin + speed * dt) % (Math.PI * 2);
 
-    for (const side of ["left", "right"] as const) {
-      this.resolveBallPlayer(this.players[side]);
-    }
+    for (const p of this.players) this.resolveBallPlayer(p);
 
-    // 위아래 터치라인
     if (ball.y - BALL.radius < 0) {
       ball.y = BALL.radius;
       ball.vy = Math.abs(ball.vy) * BALL.wallRestitution;
@@ -465,7 +660,6 @@ export class Match {
       ball.y = PITCH.width - BALL.radius;
       ball.vy = -Math.abs(ball.vy) * BALL.wallRestitution;
     }
-    // 좌우 골라인 (골문 밖일 때만 튕긴다)
     const inMouth = ball.y > GOAL_TOP && ball.y < GOAL_BOTTOM;
     if (!inMouth) {
       if (ball.x - BALL.radius < 0) {
@@ -478,12 +672,11 @@ export class Match {
     }
   }
 
-  /** 공을 몰 수 있는 선수(가장 가깝고 사거리 안이며 움직이는 중) */
+  /** 공을 몰고 있는 선수(가장 가깝고 사거리 안이며 움직이는 중) */
   private findController(): Player | null {
     let best: Player | null = null;
     let bestDist = Infinity;
-    for (const side of ["left", "right"] as const) {
-      const p = this.players[side];
+    for (const p of this.players) {
       if (p.busy) continue;
       const d = len(this.ball.x - p.x, this.ball.y - p.y);
       if (d > DRIBBLE.range) continue;
@@ -510,12 +703,84 @@ export class Match {
     ball.y = p.y + ny * min;
     const rel = (ball.vx - p.vx) * nx + (ball.vy - p.vy) * ny;
     if (rel < 0) {
-      const j = -(1 + 0.45) * rel;
-      ball.vx += j * nx;
-      ball.vy += j * ny;
+      const jImp = -(1 + 0.45) * rel;
+      ball.vx += jImp * nx;
+      ball.vy += jImp * ny;
     }
     ball.vx += p.vx * 0.22;
     ball.vy += p.vy * 0.22;
+    this.lastToucherId = p.id;
+  }
+
+  /** 사람이 조작할 선수를 상황에 맞게 넘긴다. */
+  private updateControl(ms: number, events: SimEvent[]): void {
+    for (const side of ["left", "right"] as const) {
+      if (!this.humanSides[side]) continue;
+      const current = this.controlled[side];
+      const owner = this.ball.ownerId ? this.byId.get(this.ball.ownerId) : undefined;
+
+      // 동료가 공을 잡으면 그 선수로 바로 넘긴다
+      if (owner && owner.side === side && owner.id !== current) {
+        this.setControlled(side, owner.id, events);
+        continue;
+      }
+      if (owner && owner.side === side) continue;
+      if (this.switchCooldown[side] > 0) continue;
+
+      // 공을 상대가 가졌거나 흘렀으면 공에 가장 가까운 선수가 맡는다
+      const nearest = this.nearestToBall(side);
+      if (nearest && nearest.id !== current) {
+        const currentPlayer = this.byId.get(current);
+        const currentDist = currentPlayer
+          ? len(this.ball.x - currentPlayer.x, this.ball.y - currentPlayer.y)
+          : Infinity;
+        const nearestDist = len(this.ball.x - nearest.x, this.ball.y - nearest.y);
+        // 충분히 더 가까울 때만 넘겨서 깜빡임을 막는다
+        if (nearestDist < currentDist - 2) this.setControlled(side, nearest.id, events);
+      }
+      void ms;
+    }
+  }
+
+  private setControlled(side: Side, id: string, events: SimEvent[]): void {
+    if (this.controlled[side] === id) return;
+    const previous = this.byId.get(this.controlled[side]);
+    if (previous) {
+      previous.input = neutralInput();
+      previous.prevShoot = false;
+      previous.chargeMs = 0;
+    }
+    this.controlled[side] = id;
+    this.switchCooldown[side] = MATCH.controlSwitchMs;
+    events.push({ kind: "control", side, playerId: id });
+  }
+
+  private nearestToBall(side: Side): Player | null {
+    let best: Player | null = null;
+    let bestDist = Infinity;
+    for (const p of this.team(side)) {
+      if (p.proneMs > 0) continue;
+      const d = len(this.ball.x - p.x, this.ball.y - p.y);
+      if (d < bestDist) {
+        bestDist = d;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  /** 수동 선수 전환: 공에 가까운 순서로 다음 동료에게 넘긴다. */
+  manualSwitch(side: Side): void {
+    const mates = this.team(side)
+      .filter((p) => p.id !== this.controlled[side])
+      .sort(
+        (a, b) =>
+          len(this.ball.x - a.x, this.ball.y - a.y) - len(this.ball.x - b.x, this.ball.y - b.y),
+      );
+    const next = mates[0];
+    if (!next) return;
+    const events: SimEvent[] = [];
+    this.setControlled(side, next.id, events);
   }
 
   private detectGoal(): Side | null {
@@ -529,33 +794,36 @@ export class Match {
   private animOf(p: Player): AnimState {
     if (p.celebrating && this.phase === "goal") return "celebrate";
     if (p.proneMs > 0) return "prone";
-    if (p.skill === "slide") return "slide";
+    if (p.skill === "tackle") return "tackle";
     if (p.skill === "stepover") return "stepover";
-    if (p.kickAnimMs > 0) return "kick";
+    if (p.skill === "dragback") return "dragback";
+    if (p.skill === "feintLeft" || p.skill === "feintRight") return "feint";
+    if (p.actionAnim === "shoot") return "shoot";
+    if (p.actionAnim === "pass") return "pass";
     const speed = len(p.vx, p.vy);
     if (speed < 0.35) return "idle";
     if (p.dribbling) return "dribble";
     return p.sprinting ? "sprint" : "run";
   }
 
-  viewOf(side: Side): PlayerView {
-    const p = this.players[side];
+  viewOf(p: Player): PlayerView {
     return {
-      side,
+      id: p.id,
+      side: p.side,
+      role: p.role,
+      controlled: this.controlled[p.side] === p.id,
+      human: this.humanSides[p.side],
       x: round(p.x),
       y: round(p.y),
       vx: round(p.vx),
       vy: round(p.vy),
       facing: round(p.facing),
-      charge: round(p.chargeMs / KICK.chargeMs),
+      charge: round(p.chargeMs / SHOOT.chargeMs),
       stamina: round(p.stamina),
       dribbling: p.dribbling,
       skill: p.skill,
       skillMs: Math.round(p.skillMs),
-      cooldowns: {
-        stepover: Math.round(p.stepoverCdMs),
-        slide: Math.round(p.slideCdMs),
-      },
+      cooldowns: { skill: Math.round(p.skillCdMs), tackle: Math.round(p.tackleCdMs) },
       anim: this.animOf(p),
     };
   }
@@ -572,15 +840,17 @@ export class Match {
         vx: round(this.ball.vx),
         vy: round(this.ball.vy),
         spin: round(this.ball.spin),
+        ownerId: this.ball.ownerId,
       },
-      players: [this.viewOf("left"), this.viewOf("right")],
+      players: this.players.map((p) => this.viewOf(p)),
       score: { ...this.score },
       timeLeftMs: Math.max(0, Math.round(this.timeLeftMs)),
       countdownMs: Math.max(0, Math.round(this.countdownMs)),
+      controlled: { ...this.controlled },
+      passTarget: {
+        left: this.passTargetFor(this.controlledPlayer("left"))?.id ?? null,
+        right: this.passTargetFor(this.controlledPlayer("right"))?.id ?? null,
+      },
     };
   }
-}
-
-function round(v: number): number {
-  return Math.round(v * 1000) / 1000;
 }

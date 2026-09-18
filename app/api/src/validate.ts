@@ -1,9 +1,8 @@
-import type { ClientMessage, SkillKind } from "./protocol.ts";
+import type { ClientMessage, Vec2 } from "./protocol.ts";
 
 const NICKNAME_MAX = 12;
 const CODE_RE = /^[A-Z0-9]{6}$/;
 const CONTROL_RE = new RegExp("[\\u0000-\\u001f\\u007f]", "g");
-const SKILLS: readonly SkillKind[] = ["stepover", "slide"];
 
 /** 제어문자를 지우고 앞뒤 공백을 정리한 닉네임. 규칙에 맞지 않으면 null. */
 export function normalizeNickname(raw: unknown): string | null {
@@ -24,10 +23,14 @@ function clampAxis(value: unknown): number {
   return Math.max(-1, Math.min(1, value));
 }
 
-function parseSkill(value: unknown): SkillKind | null {
-  return typeof value === "string" && (SKILLS as readonly string[]).includes(value)
-    ? (value as SkillKind)
-    : null;
+/** 개인기 방향은 월드 좌표의 벡터로 받는다. 길이는 서버가 정규화한다. */
+function parseSkillDir(value: unknown): Vec2 | null {
+  if (typeof value !== "object" || value === null) return null;
+  const v = value as Record<string, unknown>;
+  const x = clampAxis(v["x"]);
+  const y = clampAxis(v["y"]);
+  if (x === 0 && y === 0) return null;
+  return { x, y };
 }
 
 /**
@@ -71,9 +74,12 @@ export function parseClientMessage(raw: string): ClientMessage | null {
         seq,
         ax: clampAxis(msg["ax"]),
         ay: clampAxis(msg["ay"]),
-        kick: msg["kick"] === true,
         sprint: msg["sprint"] === true,
-        skill: parseSkill(msg["skill"]),
+        shoot: msg["shoot"] === true,
+        pass: msg["pass"] === true,
+        tackle: msg["tackle"] === true,
+        skillDir: parseSkillDir(msg["skillDir"]),
+        switchPlayer: msg["switchPlayer"] === true,
       };
     }
     case "rematch":

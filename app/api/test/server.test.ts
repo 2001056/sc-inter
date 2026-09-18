@@ -109,23 +109,35 @@ test("두 브라우저가 같은 방에서 같은 경기 상태를 본다", asyn
       m.t === "snapshot" && m.tick >= snapA.tick,
   );
   assert.deepEqual(snapA.score, snapB.score);
-  assert.equal(snapB.players.length, 2);
+  assert.equal(snapB.players.length, 6);
 
-  // 입력을 보내면 서버 상태가 움직이고 두 화면 모두 같은 위치를 받는다
-  host.send({ t: "input", seq: 1, ax: 1, ay: 0, kick: false, sprint: true, skill: null });
-  const before = snapA.players.find((p) => p.side === "left")!.x;
+  // 입력을 보내면 내가 조작 중인 선수가 움직이고 두 화면 모두 같은 위치를 받는다
+  const myId = snapA.controlled.left;
+  const before = snapA.players.find((p) => p.id === myId)!.x;
+  host.send({
+    t: "input",
+    seq: 1,
+    ax: 1,
+    ay: 0,
+    sprint: true,
+    shoot: false,
+    pass: false,
+    tackle: false,
+    skillDir: null,
+    switchPlayer: false,
+  });
   const moved = await host.waitFor(
     (m): m is Extract<ServerMessage, { t: "snapshot" }> =>
       m.t === "snapshot" &&
       m.phase === "playing" &&
-      (m.players.find((p) => p.side === "left")?.x ?? 0) > before + 0.5,
+      (m.players.find((p) => p.id === myId)?.x ?? 0) > before + 0.5,
     8000,
   );
   const mirrored = await guest.waitFor(
     (m): m is Extract<ServerMessage, { t: "snapshot" }> =>
       m.t === "snapshot" && m.tick >= moved.tick,
   );
-  const lx = mirrored.players.find((p) => p.side === "left")!.x;
+  const lx = mirrored.players.find((p) => p.id === myId)!.x;
   assert.ok(lx > before + 0.4, `상대 화면에서도 움직여야 한다 (${before} -> ${lx})`);
 
   host.close();
@@ -168,7 +180,18 @@ test("형식이 틀린 메시지는 BAD_MESSAGE 로 거절한다", async () => {
 
 test("방에 없는 상태의 입력은 NOT_IN_ROOM", async () => {
   const c = await TestClient.connect(wsUrl);
-  c.send({ t: "input", seq: 1, ax: 0, ay: 0, kick: false, sprint: false, skill: null });
+  c.send({
+    t: "input",
+    seq: 1,
+    ax: 0,
+    ay: 0,
+    sprint: false,
+    shoot: false,
+    pass: false,
+    tackle: false,
+    skillDir: null,
+    switchPlayer: false,
+  });
   const err = await c.waitFor(isError);
   assert.equal(err.code, "NOT_IN_ROOM");
   c.close();
@@ -225,9 +248,9 @@ test("연습 모드는 혼자서도 경기가 시작된다", async () => {
   assert.equal(joined.mode, "practice");
   const snap = await c.waitFor(
     (m): m is Extract<ServerMessage, { t: "snapshot" }> =>
-      m.t === "snapshot" && m.players.length === 2,
+      m.t === "snapshot" && m.players.length === 6,
   );
-  assert.equal(snap.players.length, 2);
+  assert.equal(snap.players.filter((p) => p.side === "right" && !p.human).length, 3);
   c.close();
 });
 

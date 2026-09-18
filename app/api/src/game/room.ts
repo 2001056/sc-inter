@@ -3,9 +3,18 @@
  * 하나의 전역 루프가 모든 방을 같은 틱으로 진행한다.
  */
 import { randomBytes } from "node:crypto";
-import { MATCH, PITCH, PLAYER, BALL, ROOM, type Side } from "./constants.ts";
-import { Match, NEUTRAL_INPUT } from "./sim.ts";
-import { Bot } from "./bot.ts";
+import {
+  BALL,
+  MATCH,
+  PITCH,
+  PLAYER,
+  ROOM,
+  SHOOT,
+  SKILL,
+  TEAM_SIZE,
+  type Side,
+} from "./constants.ts";
+import { Match, neutralInput } from "./sim.ts";
 import type {
   InputState,
   PitchInfo,
@@ -22,6 +31,10 @@ export const PITCH_INFO: PitchInfo = {
   playerRadius: PLAYER.radius,
   playerHeight: PLAYER.height,
   ballRadius: BALL.radius,
+  teamSize: TEAM_SIZE,
+  skillCooldownMs: SKILL.moveCooldownMs,
+  tackleCooldownMs: SKILL.tackle.cooldownMs,
+  shootChargeMs: SHOOT.chargeMs,
 };
 
 export interface ClientConn {
@@ -35,7 +48,8 @@ interface Seat {
   nickname: string;
   token: string;
   conn: ClientConn | null;
-  bot: Bot | null;
+  /** 사람이 앉지 않고 AI 가 맡은 자리(연습 모드) */
+  bot: boolean;
   rematchReady: boolean;
   disconnectedAt: number | null;
 }
@@ -77,7 +91,7 @@ export class Room {
 
   get humanCount(): number {
     let n = 0;
-    for (const seat of this.seats.values()) if (seat.bot === null) n += 1;
+    for (const seat of this.seats.values()) if (seat.bot === false) n += 1;
     return n;
   }
 
@@ -106,11 +120,12 @@ export class Room {
       nickname,
       token: makeToken(),
       conn,
-      bot: null,
+      bot: false,
       rematchReady: false,
       disconnectedAt: null,
     };
     this.seats.set(side, seat);
+    this.match.humanSides[side] = true;
     this.emptySince = null;
     this.touch();
     return seat;
@@ -119,18 +134,19 @@ export class Room {
   addBot(side: Side): void {
     this.seats.set(side, {
       side,
-      nickname: "연습 상대",
+      nickname: "AI 팀",
       token: makeToken(),
       conn: null,
-      bot: new Bot(side),
+      bot: true,
       rematchReady: true,
       disconnectedAt: null,
     });
+    this.match.humanSides[side] = false;
   }
 
   resume(token: string, conn: ClientConn): Seat | null {
     for (const seat of this.seats.values()) {
-      if (seat.token === token && seat.bot === null) {
+      if (seat.token === token && seat.bot === false) {
         seat.conn = conn;
         seat.disconnectedAt = null;
         this.emptySince = null;
@@ -153,6 +169,7 @@ export class Room {
 
   removeSeat(side: Side): void {
     this.seats.delete(side);
+    this.match.humanSides[side] = false;
     if (this.humanConnectedCount() === 0) this.emptySince = Date.now();
     this.touch();
   }
@@ -160,7 +177,7 @@ export class Room {
   humanConnectedCount(): number {
     let n = 0;
     for (const seat of this.seats.values()) {
-      if (seat.bot === null && seat.conn !== null) n += 1;
+      if (seat.bot === false && seat.conn !== null) n += 1;
     }
     return n;
   }
@@ -203,9 +220,9 @@ export class Room {
       out.push({
         side,
         nickname: seat.nickname,
-        connected: seat.bot !== null || seat.conn !== null,
+        connected: seat.bot || seat.conn !== null,
         rematchReady: seat.rematchReady,
-        bot: seat.bot !== null,
+        bot: seat.bot,
       });
     }
     return out;
@@ -249,17 +266,22 @@ export class Room {
     while (this.accumulatorMs >= stepMs) {
       this.accumulatorMs -= stepMs;
       for (const seat of this.seats.values()) {
-        if (seat.bot !== null) {
-          this.match.forceInput(seat.side, seat.bot.think(this.match, stepMs));
-        } else if (seat.conn === null) {
-          this.match.forceInput(seat.side, { ...NEUTRAL_INPUT });
+        if (!seat.bot && seat.conn === null) {
+          // 접속이 끊긴 사람의 선수는 손을 놓은 상태로 둔다
+          this.match.forceInput(seat.side, neutralInput());
         }
       }
       const events = this.match.step(stepMs / 1000);
       for (const ev of events) {
         switch (ev.kind) {
           case "goal":
-            this.broadcast({ t: "event", kind: "goal", side: ev.side, score: ev.score });
+            this.broadcast({
+              t: "event",
+              kind: "goal",
+              side: ev.side,
+              scorerId: ev.scorerId,
+              score: ev.score,
+            });
             this.broadcast(this.roomMessage());
             break;
           case "kickoff":
@@ -275,16 +297,37 @@ export class Room {
             });
             this.broadcast(this.roomMessage());
             break;
-          case "kick":
-            this.broadcast({ t: "event", kind: "kick", side: ev.side, power: ev.power });
+          case "shoot":
+            this.broadcast({
+              t: "event",
+              kind: "shoot",
+              playerId: ev.playerId,
+              power: ev.power,
+            });
+            break;
+          case "pass":
+            this.broadcast({
+              t: "event",
+              kind: "pass",
+              playerId: ev.playerId,
+              targetId: ev.targetId,
+            });
             break;
           case "skill":
             this.broadcast({
               t: "event",
               kind: "skill",
-              side: ev.side,
+              playerId: ev.playerId,
               skill: ev.skill,
               beat: ev.beat,
+            });
+            break;
+          case "control":
+            this.broadcast({
+              t: "event",
+              kind: "control",
+              side: ev.side,
+              playerId: ev.playerId,
             });
             break;
         }
@@ -312,12 +355,13 @@ export class Room {
     const expired: Side[] = [];
     for (const seat of [...this.seats.values()]) {
       if (
-        seat.bot === null &&
+        seat.bot === false &&
         seat.conn === null &&
         seat.disconnectedAt !== null &&
         now - seat.disconnectedAt > ROOM.reconnectGraceMs
       ) {
         this.seats.delete(seat.side);
+        this.match.humanSides[seat.side] = false;
         expired.push(seat.side);
       }
     }
