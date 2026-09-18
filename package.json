@@ -2,7 +2,7 @@
   "name": "online-soccer",
   "private": true,
   "version": "0.1.0",
-  "description": "웹 브라우저 1대1 온라인 미니 축구",
+  "description": "웹 브라우저 3대3 온라인 3D 축구 (사람 1명 + AI 동료 2명)",
   "engines": { "node": ">=22" },
   "scripts": {
     "dev": "pnpm --filter @soccer/web dev",

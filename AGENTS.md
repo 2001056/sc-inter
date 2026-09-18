@@ -1,4 +1,4 @@
-# AGENTS.md — sc-inter (온라인 미니 축구)
+# AGENTS.md — sc-inter (온라인 3대3 3D 축구)
 
 이 파일이 1순위 원본이다. 세부 절차는 `docs/` 로 위임한다.
 
