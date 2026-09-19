@@ -26,11 +26,13 @@ import type {
   BallView,
   InputState,
   MatchResult,
+  MatchStats,
   Phase,
   PlayerView,
   Score,
   SkillKind,
   Snapshot,
+  TeamStats,
 } from "../protocol.ts";
 
 export type SimEvent =
@@ -56,6 +58,22 @@ export const NEUTRAL_INPUT: InputState = {
 
 export function neutralInput(): InputState {
   return { ...NEUTRAL_INPUT };
+}
+
+function emptyTeamStats(): TeamStats {
+  return { shots: 0, passes: 0, completedPasses: 0, possessionMs: 0 };
+}
+
+export function emptyStats(): MatchStats {
+  return { left: emptyTeamStats(), right: emptyTeamStats() };
+}
+
+/** 성공 여부를 아직 모르는 패스. 받을 동료가 처음 공을 소유하면 완료로 센다. */
+export interface PendingPass {
+  side: Side;
+  passerId: string;
+  targetId: string;
+  msLeft: number;
 }
 
 export class Player {
@@ -93,6 +111,13 @@ export class Player {
   aiTimerMs = 0;
   aiNoise = 0;
   aiChargeMs = 0;
+  /** 슛을 충전하는 동안 고정해 두는 조준점(y) */
+  aiAimY = 0;
+  /** 지원 위치를 다시 고를 때까지 남은 시간과 지금 목표 */
+  aiRetargetMs = 0;
+  aiTargetX = 0;
+  aiTargetY = 0;
+  aiHasTarget = false;
 
   constructor(id: string, side: Side, role: Role) {
     this.id = id;
@@ -124,6 +149,9 @@ export class Player {
     this.prevShoot = false;
     this.celebrating = false;
     this.input = neutralInput();
+    this.aiChargeMs = 0;
+    this.aiRetargetMs = 0;
+    this.aiHasTarget = false;
   }
 
   get busy(): boolean {
@@ -183,6 +211,10 @@ export class Match {
     ownerId: null,
   };
   lastToucherId: string | null = null;
+  /** 팀별 경기 기록(서버 권위). 재경기(startMatch)에서만 초기화된다. */
+  stats: MatchStats = emptyStats();
+  /** 지금 굴러가는 중인, 받을 동료가 정해진 패스. AI 수신자도 이것을 보고 받으러 간다. */
+  pendingPass: PendingPass | null = null;
 
   private switchCooldown: Record<Side, number> = { left: 0, right: 0 };
   /** 패스가 날아가는 동안에는 조작을 다른 선수에게 넘기지 않는다. */
@@ -214,6 +246,7 @@ export class Match {
   /** 대기 상태에서 킥오프 카운트다운으로 들어간다. */
   startMatch(): void {
     this.score = { left: 0, right: 0 };
+    this.stats = emptyStats();
     this.timeLeftMs = MATCH.durationMs;
     this.result = null;
     this.resetPositions();
@@ -235,6 +268,7 @@ export class Match {
       ownerId: null,
     };
     this.lastToucherId = null;
+    this.pendingPass = null;
     this.controlled = { left: "L3", right: "R3" };
   }
 
@@ -299,6 +333,7 @@ export class Match {
     }
     this.resolvePlayerCollisions();
     this.stepBall(dt);
+    this.updateStats(ms);
     this.updateControl(ms, events);
 
     const scored = this.detectGoal();
@@ -316,6 +351,7 @@ export class Match {
     if (this.timeLeftMs <= 0) {
       this.timeLeftMs = 0;
       this.phase = "ended";
+      this.pendingPass = null;
       this.result =
         this.score.left === this.score.right
           ? "draw"
@@ -524,7 +560,7 @@ export class Match {
     this.ball.vx = (dx / d) * SKILL.tackle.poke;
     this.ball.vy = (dy / d) * SKILL.tackle.poke;
     this.ball.ownerId = null;
-    this.lastToucherId = p.id;
+    this.touch(p);
     p.tacklePoked = true;
   }
 
@@ -535,7 +571,7 @@ export class Match {
     if (len(dx, dy) > DRIBBLE.range) return;
     this.ball.vx += p.skillDirX * SKILL.dragback.ballPull * dt * 10;
     this.ball.vy += p.skillDirY * SKILL.dragback.ballPull * dt * 10;
-    this.lastToucherId = p.id;
+    this.touch(p);
   }
 
   private inKickRange(p: Player, reach: number): boolean {
@@ -557,14 +593,16 @@ export class Match {
     this.ball.vx = nx * power + p.vx * SHOOT.carry;
     this.ball.vy = ny * power + p.vy * SHOOT.carry;
     this.ball.ownerId = null;
-    this.lastToucherId = p.id;
+    this.touch(p);
+    this.stats[p.side].shots += 1;
+    this.pendingPass = null;
     events.push({ kind: "shoot", playerId: p.id, power: round(power) });
   }
 
-  /** 바라보는 방향에서 가장 받기 좋은 동료 */
-  passTargetFor(p: Player): Player | null {
-    const fx = Math.cos(p.facing);
-    const fy = Math.sin(p.facing);
+  /** 바라보는 방향에서 가장 받기 좋은 동료. `facing` 을 주면 그 방향을 본다고 가정한다(AI 판단용). */
+  passTargetFor(p: Player, facing: number = p.facing): Player | null {
+    const fx = Math.cos(facing);
+    const fy = Math.sin(facing);
     let best: Player | null = null;
     let bestScore = Infinity;
     for (const mate of this.players) {
@@ -588,6 +626,9 @@ export class Match {
     p.actionAnim = "pass";
     p.actionAnimMs = 220;
     if (!this.inKickRange(p, PASS.reach)) return;
+    this.stats[p.side].passes += 1;
+    // 새 패스는 이전 패스의 완료 판정을 끝낸다
+    this.pendingPass = null;
     const target = this.passTargetFor(p);
     if (target === null) {
       const nx = Math.cos(p.facing);
@@ -595,7 +636,7 @@ export class Match {
       this.ball.vx = nx * PASS.fallbackSpeed;
       this.ball.vy = ny * PASS.fallbackSpeed;
       this.ball.ownerId = null;
-      this.lastToucherId = p.id;
+      this.touch(p);
       events.push({ kind: "pass", playerId: p.id, targetId: null });
       return;
     }
@@ -609,8 +650,14 @@ export class Match {
     this.ball.vx = (dx / dist) * speed;
     this.ball.vy = (dy / dist) * speed;
     this.ball.ownerId = null;
-    this.lastToucherId = p.id;
-    this.passInFlight[p.side] = { targetId: target.id, msLeft: 2500 };
+    this.touch(p);
+    this.passInFlight[p.side] = { targetId: target.id, msLeft: PASS.completeWindowMs };
+    this.pendingPass = {
+      side: p.side,
+      passerId: p.id,
+      targetId: target.id,
+      msLeft: PASS.completeWindowMs,
+    };
     events.push({ kind: "pass", playerId: p.id, targetId: target.id });
   }
 
@@ -650,7 +697,7 @@ export class Match {
     for (const p of this.players) p.dribbling = controller?.id === p.id;
     ball.ownerId = controller?.id ?? null;
     if (controller) {
-      this.lastToucherId = controller.id;
+      this.touch(controller);
       const looseness = controller.sprinting ? DRIBBLE.sprintLooseness : 1;
       const tx = controller.x + Math.cos(controller.facing) * DRIBBLE.leadDistance;
       const ty = controller.y + Math.sin(controller.facing) * DRIBBLE.leadDistance;
@@ -693,6 +740,37 @@ export class Match {
     }
   }
 
+  /**
+   * 경기 기록을 갱신한다(`playing` 단계의 틱마다 공 이동 직후).
+   * - 소유 시간: 공 소유자 팀에 이번 틱 시간을 더한다.
+   * - 패스 완료: 받을 동료가 처음 공을 소유하면 1회. 패스한 선수도 받을 동료도 아닌
+   *   동료가 먼저 잡거나 시간이 지나면 취소한다. 상대 터치는 닿는 순간 `touch` 에서 취소한다.
+   */
+  /**
+   * 선수가 공에 닿았다. 마지막 터치를 기록하고, 대기 중인 패스를 상대가 건드렸으면
+   * 그 자리에서 취소한다(같은 틱에 받을 동료가 소유해도 먼저 닿은 상대 터치가 이긴다).
+   */
+  private touch(p: Player): void {
+    this.lastToucherId = p.id;
+    if (this.pendingPass !== null && this.pendingPass.side !== p.side) this.pendingPass = null;
+  }
+
+  private updateStats(ms: number): void {
+    const owner = this.ball.ownerId ? this.byId.get(this.ball.ownerId) : undefined;
+    if (owner) this.stats[owner.side].possessionMs += ms;
+
+    const pending = this.pendingPass;
+    if (pending === null) return;
+    if (owner && owner.id === pending.targetId) {
+      this.stats[pending.side].completedPasses += 1;
+      this.pendingPass = null;
+      return;
+    }
+    const takenByOther = owner !== undefined && owner.id !== pending.passerId;
+    pending.msLeft -= ms;
+    if (takenByOther || pending.msLeft <= 0) this.pendingPass = null;
+  }
+
   /** 공을 몰고 있는 선수(가장 가깝고 사거리 안이며 움직이는 중) */
   private findController(): Player | null {
     let best: Player | null = null;
@@ -730,7 +808,7 @@ export class Match {
     }
     ball.vx += p.vx * 0.22;
     ball.vy += p.vy * 0.22;
-    this.lastToucherId = p.id;
+    this.touch(p);
   }
 
   /**
@@ -869,6 +947,16 @@ export class Match {
     };
   }
 
+  private statsView(side: Side): TeamStats {
+    const s = this.stats[side];
+    return {
+      shots: s.shots,
+      passes: s.passes,
+      completedPasses: s.completedPasses,
+      possessionMs: Math.round(s.possessionMs),
+    };
+  }
+
   snapshot(now: number): Snapshot {
     return {
       t: "snapshot",
@@ -891,6 +979,10 @@ export class Match {
       passTarget: {
         left: this.passTargetFor(this.controlledPlayer("left"))?.id ?? null,
         right: this.passTargetFor(this.controlledPlayer("right"))?.id ?? null,
+      },
+      stats: {
+        left: this.statsView("left"),
+        right: this.statsView("right"),
       },
     };
   }

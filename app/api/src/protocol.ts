@@ -138,6 +138,26 @@ export interface BallView {
   ownerId: string | null;
 }
 
+/**
+ * 팀 경기 기록. 모든 값은 서버가 판정한다.
+ * - `shots` / `passes`: 발이 공에 닿은 유효한 슛·패스만 센다(헛발질 제외).
+ * - `completedPasses`: 패스를 받기로 한 동료가 처음 공을 소유한 순간 1회.
+ *   그 전에 상대 터치·슛·새 패스·킥오프 리셋·경기 종료가 있으면 취소된다.
+ * - `possessionMs`: `playing` 단계에서 그 팀 선수가 공을 소유한 누적 시간(ms).
+ * 득점 후 킥오프에서는 유지되고, 재경기(새 경기)에서 0 으로 초기화된다.
+ */
+export interface TeamStats {
+  shots: number;
+  passes: number;
+  completedPasses: number;
+  possessionMs: number;
+}
+
+export interface MatchStats {
+  left: TeamStats;
+  right: TeamStats;
+}
+
 export interface Snapshot {
   t: "snapshot";
   tick: number;
@@ -153,6 +173,8 @@ export interface Snapshot {
   controlled: { left: string; right: string };
   /** 내가 패스하면 받을 가능성이 가장 높은 동료 id (각 팀 기준) */
   passTarget: { left: string | null; right: string | null };
+  /** 팀별 경기 기록(서버 권위) */
+  stats: MatchStats;
 }
 
 export type ServerEvent =

@@ -64,6 +64,8 @@ export const PASS = {
   fallbackSpeed: 11,
   /** 이 각도(라디안) 안의 동료만 패스 후보로 본다 */
   maxAngle: 1.5,
+  /** 받을 동료가 이 시간 안에 공을 소유하지 못하면 완료되지 않은 패스로 본다 */
+  completeWindowMs: 2500,
 } as const;
 
 /** 볼 컨트롤(드리블): 공을 발 앞에 붙여 두는 부드러운 유도력 */
