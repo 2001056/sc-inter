@@ -26,7 +26,7 @@ import {
   SKILL,
   STAMINA,
   TEAM_SIZE,
-  spawnFor,
+  kickoffSpotFor,
   type Side,
 } from "../src/game/constants.ts";
 import { Match, neutralInput, type SimEvent } from "../src/game/sim.ts";
@@ -893,8 +893,9 @@ describe("경기 흐름과 6인 상태", () => {
     // 연출 시간이 지나면 카운트다운으로 복귀하고 전원이 스폰 위치로
     run(match, ticksFor(MATCH.goalCelebrationMs) + 2);
     assert.equal(match.phase, "countdown");
+    assert.equal(match.kickoffSide, "right", "실점한 오른쪽 팀이 다음 킥오프를 찬다");
     for (const p of match.players) {
-      const s = spawnFor(p.side, p.role);
+      const s = kickoffSpotFor(p.side, p.role, match.kickoffSide);
       assert.ok(
         dist(p.x, p.y, s.x, s.y) < 0.01,
         `${p.id} 이 킥오프 위치로 돌아가야 한다 (${p.x.toFixed(2)},${p.y.toFixed(2)})`,
@@ -980,7 +981,7 @@ describe("경기 흐름과 6인 상태", () => {
     assert.equal(room.match.result, null);
     assert.equal(room.match.timeLeftMs, MATCH.durationMs);
     for (const p of room.match.players) {
-      const s = spawnFor(p.side, p.role);
+      const s = kickoffSpotFor(p.side, p.role, room.match.kickoffSide);
       assert.ok(dist(p.x, p.y, s.x, s.y) < 0.01, `${p.id} 재배치`);
       assert.ok(p.stamina >= 0.7, "체력도 회복된 상태로 시작한다");
     }

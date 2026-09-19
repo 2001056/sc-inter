@@ -66,6 +66,11 @@ export const PASS = {
   maxAngle: 1.5,
   /** 받을 동료가 이 시간 안에 공을 소유하지 못하면 완료되지 않은 패스로 본다 */
   completeWindowMs: 2500,
+  /**
+   * 실제로 공을 찬 패스 뒤, 패스한 선수가 드리블로 공을 다시 붙잡지 못하는 시간.
+   * 헛발질(사거리 밖)에는 걸지 않는다.
+   */
+  releaseMs: 280,
 } as const;
 
 /** 볼 컨트롤(드리블): 공을 발 앞에 붙여 두는 부드러운 유도력 */
@@ -167,12 +172,31 @@ export const FORMATION: Record<Role, { depth: number; lateral: number }> = {
   forward: { depth: 0.44, lateral: 0.58 },
 };
 
-/** 역할별 킥오프 위치 */
+/** 역할별 기본 대형 위치 */
 export function spawnFor(side: Side, role: Role): { x: number; y: number } {
   const f = FORMATION[role];
   const x = side === "left" ? PITCH.length * f.depth : PITCH.length * (1 - f.depth);
   const y = side === "left" ? PITCH.width * f.lateral : PITCH.width * (1 - f.lateral);
   return { x, y };
+}
+
+/** 킥오프권을 가진 팀의 공격수가 서는 자리: 공(센터) 바로 뒤, 자기 진영 쪽 */
+export const KICKOFF = {
+  /** 공 중심에서 킥커 중심까지 거리(m). 킥 사거리 1.08m 와 드리블 범위 1.5m 안쪽 */
+  takerGap: 0.95,
+  /** 킥오프를 차는 역할 */
+  takerRole: "forward" as Role,
+} as const;
+
+/**
+ * 킥오프 때 선수가 서는 자리. 킥오프권 팀의 공격수만 공 바로 뒤에 서고,
+ * 나머지 다섯 명은 기본 대형 그대로다. 킥커 자리는 센터 기준 ±로 계산해 양 팀이 대칭이다.
+ */
+export function kickoffSpotFor(side: Side, role: Role, kickoffSide: Side): { x: number; y: number } {
+  if (side === kickoffSide && role === KICKOFF.takerRole) {
+    return { x: PITCH.length / 2 - attackDirX(side) * KICKOFF.takerGap, y: PITCH.width / 2 };
+  }
+  return spawnFor(side, role);
 }
 
 export const GOAL_TOP = (PITCH.width - PITCH.goalWidth) / 2;

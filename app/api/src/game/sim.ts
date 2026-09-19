@@ -16,6 +16,7 @@ import {
   SKILL,
   STAMINA,
   attackDirX,
+  kickoffSpotFor,
   spawnFor,
   type Role,
   type Side,
@@ -60,6 +61,10 @@ export function neutralInput(): InputState {
   return { ...NEUTRAL_INPUT };
 }
 
+function otherSide(side: Side): Side {
+  return side === "left" ? "right" : "left";
+}
+
 function emptyTeamStats(): TeamStats {
   return { shots: 0, passes: 0, completedPasses: 0, possessionMs: 0 };
 }
@@ -90,6 +95,8 @@ export class Player {
   chargeMs = 0;
   shootCdMs = 0;
   passCdMs = 0;
+  /** 실제로 찬 패스 직후, 이 선수가 공을 다시 드리블로 붙잡지 못하는 남은 시간 */
+  passReleaseMs = 0;
   /** 슛·패스 모션을 잠깐 보여주기 위한 타이머 */
   actionAnim: "shoot" | "pass" | null = null;
   actionAnimMs = 0;
@@ -129,8 +136,8 @@ export class Player {
     this.y = spawn.y;
   }
 
-  resetToSpawn(): void {
-    const spawn = spawnFor(this.side, this.role);
+  /** 킥오프 자리로 돌아간다. 자리를 주지 않으면 기본 대형 위치. */
+  resetToSpawn(spawn: { x: number; y: number } = spawnFor(this.side, this.role)): void {
     this.x = spawn.x;
     this.y = spawn.y;
     this.vx = 0;
@@ -139,6 +146,7 @@ export class Player {
     this.chargeMs = 0;
     this.shootCdMs = 0;
     this.passCdMs = 0;
+    this.passReleaseMs = 0;
     this.actionAnim = null;
     this.actionAnimMs = 0;
     this.skill = null;
@@ -215,6 +223,13 @@ export class Match {
   stats: MatchStats = emptyStats();
   /** 지금 굴러가는 중인, 받을 동료가 정해진 패스. AI 수신자도 이것을 보고 받으러 간다. */
   pendingPass: PendingPass | null = null;
+  /**
+   * 다음 킥오프를 차는 팀. 경기 첫 킥오프는 `startMatch` 가 정하고(첫 경기는 추첨,
+   * 재경기는 직전 경기 첫 킥오프의 반대 팀), 득점 뒤에는 실점한 팀이 찬다.
+   */
+  kickoffSide: Side = "left";
+  /** 직전 경기의 첫 킥오프 팀. 재경기에서 번갈아 주려고 기억한다. */
+  private openingKickoff: Side | null = null;
 
   private switchCooldown: Record<Side, number> = { left: 0, right: 0 };
   /** 패스가 날아가는 동안에는 조작을 다른 선수에게 넘기지 않는다. */
@@ -249,6 +264,15 @@ export class Match {
     this.stats = emptyStats();
     this.timeLeftMs = MATCH.durationMs;
     this.result = null;
+    // 첫 경기는 서버 추첨, 재경기는 직전 경기 첫 킥오프의 반대 팀이 먼저 찬다
+    const opening: Side =
+      this.openingKickoff === null
+        ? Math.random() < 0.5
+          ? "left"
+          : "right"
+        : otherSide(this.openingKickoff);
+    this.openingKickoff = opening;
+    this.kickoffSide = opening;
     this.resetPositions();
     this.phase = "countdown";
     this.countdownMs = MATCH.kickoffCountdownMs;
@@ -256,7 +280,7 @@ export class Match {
 
   resetPositions(): void {
     for (const p of this.players) {
-      p.resetToSpawn();
+      p.resetToSpawn(kickoffSpotFor(p.side, p.role, this.kickoffSide));
       p.stamina = Math.max(p.stamina, 0.7);
     }
     this.ball = {
@@ -339,6 +363,8 @@ export class Match {
     const scored = this.detectGoal();
     if (scored !== null) {
       this.score[scored] += 1;
+      // 실점한 팀이 다음 킥오프를 찬다
+      this.kickoffSide = otherSide(scored);
       this.phase = "goal";
       this.celebrationMs = MATCH.goalCelebrationMs;
       const scorerId = this.lastToucherId ?? this.controlled[scored];
@@ -373,6 +399,7 @@ export class Match {
     for (const p of this.players) {
       p.shootCdMs = Math.max(0, p.shootCdMs - ms);
       p.passCdMs = Math.max(0, p.passCdMs - ms);
+      p.passReleaseMs = Math.max(0, p.passReleaseMs - ms);
       p.actionAnimMs = Math.max(0, p.actionAnimMs - ms);
       if (p.actionAnimMs === 0) p.actionAnim = null;
       p.skillCdMs = Math.max(0, p.skillCdMs - ms);
@@ -627,6 +654,8 @@ export class Match {
     p.actionAnimMs = 220;
     if (!this.inKickRange(p, PASS.reach)) return;
     this.stats[p.side].passes += 1;
+    // 공을 실제로 찼을 때만: 패스한 선수가 제 패스를 곧바로 다시 드리블로 붙잡지 않게 한다
+    p.passReleaseMs = PASS.releaseMs;
     // 새 패스는 이전 패스의 완료 판정을 끝낸다
     this.pendingPass = null;
     const target = this.passTargetFor(p);
@@ -771,12 +800,14 @@ export class Match {
     if (takenByOther || pending.msLeft <= 0) this.pendingPass = null;
   }
 
-  /** 공을 몰고 있는 선수(가장 가깝고 사거리 안이며 움직이는 중) */
+  /** 공을 몰고 있는 선수(가장 가깝고 사거리 안이며 움직이는 중, 패스 직후 유예 중이 아닌) */
   private findController(): Player | null {
     let best: Player | null = null;
     let bestDist = Infinity;
     for (const p of this.players) {
       if (p.busy) continue;
+      // 방금 제 발로 패스를 찬 선수는 잠깐 소유 후보에서 빠진다(공과 부딪히는 물리는 그대로)
+      if (p.passReleaseMs > 0) continue;
       const d = len(this.ball.x - p.x, this.ball.y - p.y);
       if (d > DRIBBLE.range) continue;
       if (len(p.vx, p.vy) < 0.6) continue;
