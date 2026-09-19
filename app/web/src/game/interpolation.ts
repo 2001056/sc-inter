@@ -6,7 +6,7 @@
  * 얇아지거나 두꺼워지면 렌더 시각의 진행 속도를 아주 조금 조절해 따라잡는다.
  * 속도를 순간적으로 확 바꾸지 않으므로 화면이 튀지 않는다.
  */
-import type { AnimState, PlayerView, Role, Side, Snapshot } from "../net/protocol.ts";
+import type { AnimState, MatchStats, PlayerView, Role, Side, Snapshot } from "../net/protocol.ts";
 
 /** 스냅샷 두 개(50ms)를 손에 쥐고 보간할 만큼의 지연. */
 const INTERP_DELAY_MS = 105;
@@ -61,6 +61,11 @@ export interface MatchFrame {
   score: Snapshot["score"];
   timeLeftMs: number;
   countdownMs: number;
+  /**
+   * 경기 누적 기록(슛·패스·점유 시간). 누적값이라 보간하지 않고 더 최신 스냅샷 값을
+   * 그대로 쓴다. 기록을 모르는 구버전 서버이거나 아직 스냅샷이 없으면 null.
+   */
+  stats: MatchStats | null;
   /** 버퍼가 비어서 아직 보여 줄 게 없으면 false. */
   ready: boolean;
 }
@@ -203,6 +208,7 @@ export class SnapshotBuffer {
       score: b.score,
       timeLeftMs: Math.round(lerp(a.timeLeftMs, b.timeLeftMs, t)),
       countdownMs: Math.round(lerp(a.countdownMs, b.countdownMs, t)),
+      stats: b.stats ?? null,
       ready: true,
     };
   }
@@ -243,6 +249,7 @@ export class SnapshotBuffer {
       score: snapshot.score,
       timeLeftMs: Math.max(0, snapshot.timeLeftMs - aheadSec * 1000),
       countdownMs: Math.max(0, snapshot.countdownMs - aheadSec * 1000),
+      stats: snapshot.stats ?? null,
       ready: true,
     };
   }
@@ -258,6 +265,7 @@ export function emptyFrame(): MatchFrame {
     score: { left: 0, right: 0 },
     timeLeftMs: 0,
     countdownMs: 0,
+    stats: null,
     ready: false,
   };
 }

@@ -44,6 +44,18 @@
   --font: "Pretendard", "Apple SD Gothic Neo", "Noto Sans KR", system-ui, -apple-system,
     "Segoe UI", sans-serif;
 
+  /* 경기 위에 뜨는 판. 경기장이 비쳐 보이되 글자는 또렷해야 한다. */
+  --scrim: rgba(7, 13, 11, 0.78);
+  --scrim-strong: rgba(7, 13, 11, 0.9);
+  --accent-soft: rgba(182, 255, 58, 0.16);
+  --team-left-soft: rgba(91, 140, 255, 0.22);
+  --team-right-soft: rgba(255, 107, 107, 0.22);
+  --btn-hover: #1d3229;
+
+  /* 경기 알림 · 득점 자막의 움직임. 움직임 줄이기를 켜면 맨 아래 규칙이 끈다. */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --motion-enter: 180ms;
+
   --shadow-panel: 0 24px 60px rgba(0, 0, 0, 0.55);
   --shadow-soft: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
@@ -67,6 +79,19 @@ body {
   line-height: 1.55;
   -webkit-font-smoothing: antialiased;
   overscroll-behavior: none;
+}
+
+/* 화면에는 안 보이고 화면 읽기 프로그램만 읽는 글. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 /* 점수·시계처럼 자리가 흔들리면 안 되는 숫자. */
@@ -109,7 +134,7 @@ input:focus-visible {
 }
 
 .btn:hover:not(:disabled) {
-  background: #1d3229;
+  background: var(--btn-hover);
   border-color: var(--accent-dim);
 }
 
@@ -444,6 +469,7 @@ input:focus-visible {
 }
 
 .hud__corner {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: flex-end;
@@ -636,20 +662,419 @@ input:focus-visible {
   white-space: nowrap;
 }
 
-.goal-flash {
+/* ---------- 경기 알림 · 득점 자막 ---------- */
+
+/*
+ * 알림은 왼쪽 가장자리 가운데에 작게 쌓는다. 위는 점수판, 아래는 게이지라
+ * 비어 있는 자리이고, 공과 선수가 주로 오가는 화면 가운데를 가리지 않는다.
+ */
+.feed {
   position: absolute;
-  inset: 0;
-  display: grid;
-  place-items: center;
+  left: max(var(--space-4), env(safe-area-inset-left));
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: 0;
+  padding: 0;
+  list-style: none;
   pointer-events: none;
+  max-width: min(300px, 46vw);
 }
 
-.goal-flash__text {
-  font-size: clamp(56px, 13vw, 140px);
-  font-weight: 900;
-  letter-spacing: -0.04em;
+.feed__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  padding: 5px var(--space-3) 5px 10px;
+  border-left: 3px solid var(--line-strong);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  background: var(--scrim);
+  font-size: 12.5px;
+  color: var(--text-muted);
+  animation: feed-in var(--motion-enter) var(--ease-out) both;
+}
+
+.feed__item[data-side="left"] {
+  border-left-color: var(--team-left);
+}
+
+.feed__item[data-side="right"] {
+  border-left-color: var(--team-right);
+}
+
+.feed__item[data-side="none"] {
+  border-left-color: var(--accent);
+}
+
+.feed__item--mine {
+  color: var(--text);
+}
+
+.feed__title {
+  flex: none;
+  font-weight: 800;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.feed__item--shot .feed__title {
   color: var(--accent);
-  text-shadow: 0 16px 70px rgba(0, 0, 0, 0.75);
+}
+
+.feed__detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@keyframes feed-in {
+  from {
+    opacity: 0;
+    transform: translateX(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/*
+ * 득점은 중계 자막처럼 화면 위쪽 3분의 1 에 잠깐. 가운데를 덮는 거대한 글자 대신
+ * 한 줄 띠로 누가 넣었는지와 바뀐 점수를 또렷하게 보여 준다.
+ */
+.goal-callout {
+  position: absolute;
+  left: 50%;
+  top: 22%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-6);
+  border: 1px solid var(--line-strong);
+  border-top: 3px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--scrim-strong);
+  box-shadow: var(--shadow-panel);
+  pointer-events: none;
+  text-align: center;
+  max-width: calc(100% - 2 * var(--space-4));
+  animation: callout-in 240ms var(--ease-out) both;
+}
+
+.goal-callout[data-side="left"] {
+  border-top-color: var(--team-left);
+}
+
+.goal-callout[data-side="right"] {
+  border-top-color: var(--team-right);
+}
+
+.goal-callout__eyebrow {
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  color: var(--text-muted);
+}
+
+.goal-callout__word {
+  font-size: clamp(40px, 7vw, 68px);
+  line-height: 1;
+  font-weight: 900;
+  letter-spacing: -0.03em;
+  color: var(--accent);
+}
+
+.goal-callout__line {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: var(--space-3);
+  font-size: 14px;
+}
+
+.goal-callout__team {
+  font-weight: 700;
+}
+
+.goal-callout__scorer {
+  color: var(--text-muted);
+}
+
+.goal-callout__score {
+  font-size: 20px;
+  font-weight: 800;
+}
+
+@keyframes callout-in {
+  from {
+    opacity: 0;
+    transform: translate(-50%, -8px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%);
+  }
+}
+
+/* 득점 직후 점수판이 넣은 팀 색으로 잠깐 테두리를 두른다. */
+.scoreboard--goal[data-goal="left"] {
+  border-color: var(--team-left);
+  box-shadow: 0 0 0 3px var(--team-left-soft), var(--shadow-soft);
+}
+
+.scoreboard--goal[data-goal="right"] {
+  border-color: var(--team-right);
+  box-shadow: 0 0 0 3px var(--team-right-soft), var(--shadow-soft);
+}
+
+/* ---------- 오른쪽 위 버튼 · 기록 · 설정 ---------- */
+
+.hud__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-1);
+  max-width: 320px;
+}
+
+.btn--small {
+  min-height: 34px;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  background: var(--scrim);
+}
+
+.btn--on {
+  border-color: var(--accent-dim);
+  background: var(--accent-soft);
+}
+
+.corner-card,
+.settings {
+  /*
+   * 버튼 아래에 떠 있는 판. 흐름에서 빼야 판을 열어도 HUD 아랫줄(게이지)이 밀리지 않는다.
+   * 터치 조작 층(.touch)보다 위에 뜬다. 판을 연 동안은 설정이 우선이다.
+   */
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  z-index: 2;
+  width: 272px;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  background: var(--scrim-strong);
+  backdrop-filter: blur(10px);
+  box-shadow: var(--shadow-soft);
+}
+
+.corner-card__title {
+  margin: 0 0 var(--space-2);
+  font-size: 12px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+
+.settings {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.settings__row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: 13px;
+}
+
+.settings__row--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-2);
+}
+
+.settings__label {
+  flex: none;
+  width: 44px;
+  color: var(--text-muted);
+}
+
+.settings__value {
+  width: 28px;
+  text-align: right;
+  color: var(--text-muted);
+}
+
+.toggle {
+  min-height: 32px;
+  padding: 0 var(--space-4);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.toggle--on {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.range {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--accent);
+}
+
+.range:disabled {
+  opacity: 0.4;
+}
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sunken);
+}
+
+.segmented__opt {
+  min-height: 34px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.segmented__opt:hover {
+  color: var(--text);
+}
+
+.segmented__opt--on {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.segmented__opt:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* ---------- 경기 기록 비교 ---------- */
+
+.stats {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  margin: 0 0 var(--space-5);
+  text-align: left;
+}
+
+.stats--compact {
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.stats__head {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.stats__team {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stats__team--left {
+  color: var(--team-left);
+}
+
+.stats__team--right {
+  color: var(--team-right);
+  text-align: right;
+}
+
+.stats__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: baseline;
+  row-gap: 4px;
+  column-gap: var(--space-2);
+  font-size: 14px;
+}
+
+.stats--compact .stats__row {
+  font-size: 12.5px;
+}
+
+.stats__label {
+  font-size: 12px;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.stats__value {
+  font-weight: 700;
+}
+
+.stats__value--right {
+  text-align: right;
+}
+
+.stats__bar {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 2px;
+  height: 5px;
+}
+
+.stats__bar-left,
+.stats__bar-right,
+.stats__bar-empty {
+  display: block;
+  flex-basis: 0;
+  border-radius: 999px;
+}
+
+.stats__bar-left {
+  background: var(--team-left);
+}
+
+.stats__bar-right {
+  background: var(--team-right);
+}
+
+.stats__bar-empty {
+  flex-grow: 1;
+  background: var(--bg-sunken);
+}
+
+.stats__empty {
+  margin: 0 0 var(--space-4);
+  font-size: 12.5px;
+  color: var(--text-faint);
+}
+
+.overlay__card--wide {
+  max-width: 520px;
 }
 
 /*
@@ -672,6 +1097,36 @@ input:focus-visible {
 
 .match--touch .minimap {
   width: 112px;
+}
+
+/*
+ * 터치 기기에서는 게이지가 위로 올라가 왼쪽 가운데가 비지 않는다.
+ * 알림은 가장 최근 한 줄만, 조이스틱 바로 위 왼쪽에 둔다.
+ */
+.match--touch .feed {
+  top: auto;
+  transform: none;
+  bottom: calc(max(24px, env(safe-area-inset-bottom)) + 148px + var(--space-3));
+  max-width: min(300px, calc(100vw - 190px));
+}
+
+.match--touch .feed__item:not(:last-child) {
+  display: none;
+}
+
+/* 가로 휴대폰: 조이스틱 위 공간이 없으므로 조이스틱 오른쪽 아래에 둔다. */
+@media (orientation: landscape) and (max-height: 520px) {
+  /* 설정·기록 판은 오른쪽 터치 버튼(폭 140px)을 가리지 않게 그 왼쪽에 연다. */
+  .match--touch .corner-card,
+  .match--touch .settings {
+    right: calc(140px + var(--space-3));
+  }
+
+  .match--touch .feed {
+    left: calc(max(20px, env(safe-area-inset-left)) + 148px + var(--space-3));
+    bottom: max(24px, env(safe-area-inset-bottom));
+    max-width: calc(100vw - 148px - 190px - 2 * var(--space-5));
+  }
 }
 
 /* ---------- 모바일 터치 조작 ---------- */
@@ -791,27 +1246,127 @@ input:focus-visible {
   }
 }
 
-@media (max-width: 720px) {
+/*
+ * 작은 화면(좁은 세로 휴대폰, 낮은 가로 휴대폰)의 HUD.
+ * 윗부분만 쓰고 짧게 끝낸다: 점수판 한 줄 → 짧은 가로 도구줄 → 게이지 2×2 + 미니맵.
+ * 선수 몸과 공이 보이는 가운데·아래는 비워 둔다(아래는 터치 조작 자리).
+ */
+@media (max-width: 720px), (orientation: landscape) and (max-height: 520px) {
+  .hud {
+    gap: var(--space-2);
+    padding: var(--space-3);
+    padding-top: max(var(--space-3), env(safe-area-inset-top));
+  }
+
+  .hud__top {
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
   .scoreboard {
-    padding: var(--space-2) var(--space-4);
+    flex: 1 1 auto;
+    min-width: 0;
+    padding: var(--space-1) var(--space-4);
     gap: var(--space-3);
   }
 
+  .scoreboard__name {
+    font-size: 13px;
+  }
+
   .scoreboard__score {
-    font-size: 22px;
+    font-size: 20px;
   }
 
-  .minimap {
-    width: 128px;
+  /* 연결 칩과 버튼을 한 줄 가로 도구줄로. */
+  .hud__corner {
+    flex-direction: row;
+    align-items: center;
+    justify-content: flex-end;
+    gap: var(--space-1);
   }
 
-  .gauges {
-    min-width: 0;
-    flex: 1;
+  .hud__buttons {
+    flex-wrap: nowrap;
+    gap: var(--space-1);
+    max-width: none;
+  }
+
+  .hud .chip {
+    height: 36px;
+    padding: 0 var(--space-2);
+    font-size: 12px;
+  }
+
+  /* 손가락으로 누를 수 있는 높이(36px)는 지키고 옆 여백만 줄인다. */
+  .hud .btn--small {
+    min-height: 36px;
+    padding: 0 var(--space-2);
+    font-size: 12.5px;
   }
 
   .hud__bottom {
     align-items: flex-start;
+    justify-content: flex-start;
+    gap: var(--space-2);
+  }
+
+  /* 게이지는 2×2 로 접어 높이를 반으로 줄인다. */
+  .gauges,
+  .match--touch .gauges {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: var(--space-3);
+    row-gap: 6px;
+    flex: 0 1 320px;
+    min-width: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .gauge {
+    grid-template-columns: 40px minmax(0, 1fr);
+    gap: var(--space-2);
+  }
+
+  .gauges .hint {
+    grid-column: 1 / -1;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .minimap,
+  .match--touch .minimap {
+    width: 104px;
+    flex: none;
+  }
+
+  .corner-card,
+  .settings {
+    width: min(272px, calc(100vw - 2 * var(--space-4)));
+  }
+
+  .feed {
+    max-width: 58vw;
+  }
+
+  .goal-callout {
+    top: 16%;
+    padding: var(--space-2) var(--space-5);
+  }
+
+}
+
+/* 좁은 세로 화면: 점수판이 한 줄을 다 쓰고, 도구줄은 그 아래 오른쪽 한 줄. */
+@media (max-width: 720px) and (orientation: portrait) {
+  .scoreboard {
+    flex-basis: 100%;
+  }
+
+  .hud__corner {
+    flex: 1 1 100%;
   }
 }
 
@@ -819,5 +1374,11 @@ input:focus-visible {
   * {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+
+  /* 알림과 득점 자막은 미끄러지지 않고 제자리에 바로 나타난다. */
+  .feed__item,
+  .goal-callout {
+    animation: none !important;
   }
 }

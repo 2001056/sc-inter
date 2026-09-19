@@ -30,8 +30,20 @@ interface Props {
   rightName: string;
   link: LinkStatus;
   latency: number | null;
+  /** 방금 득점한 팀. 점수판을 잠깐 그 팀 색으로 빛낸다. */
+  goalSide: Side | null;
+  statsOpen: boolean;
+  /** 경기 중에만 기록 판을 열 수 있다. */
+  statsEnabled: boolean;
+  settingsOpen: boolean;
+  settingsButtonRef?: React.Ref<HTMLButtonElement>;
+  soundOn: boolean;
   onLeave(): void;
   onToggleCamera(): void;
+  onToggleStats(): void;
+  onToggleSettings(): void;
+  /** 오른쪽 위 버튼 아래에 붙일 판(기록·설정). */
+  cornerPanel?: React.ReactNode;
   /** 미니맵처럼 HUD 아래줄 오른쪽에 붙일 것. */
   children?: React.ReactNode;
 }
@@ -69,7 +81,10 @@ export function Hud(props: Props): React.ReactElement {
   return (
     <div className="hud">
       <div className="hud__top">
-        <div className="scoreboard interactive">
+        <div
+          className={`scoreboard interactive${props.goalSide ? " scoreboard--goal" : ""}`}
+          data-goal={props.goalSide ?? undefined}
+        >
           <div className="scoreboard__team">
             <span className="scoreboard__dot" style={{ background: "var(--team-left)" }} />
             <span className="scoreboard__name">{leftName}</span>
@@ -93,12 +108,37 @@ export function Hud(props: Props): React.ReactElement {
             <span className={`chip__dot ${chip.tone}`} />
             {chip.text}
           </span>
-          <button className="btn btn--ghost" type="button" onClick={props.onToggleCamera}>
-            시점 (V)
-          </button>
-          <button className="btn btn--ghost" type="button" onClick={props.onLeave}>
-            나가기
-          </button>
+          <div className="hud__buttons">
+            <button className="btn btn--ghost btn--small" type="button" onClick={props.onToggleCamera}>
+              시점 (V)
+            </button>
+            <button
+              className={`btn btn--ghost btn--small${props.statsOpen ? " btn--on" : ""}`}
+              type="button"
+              aria-pressed={props.statsOpen}
+              disabled={!props.statsEnabled}
+              onClick={props.onToggleStats}
+            >
+              기록
+            </button>
+            <button
+              className={`btn btn--ghost btn--small${props.settingsOpen ? " btn--on" : ""}`}
+              type="button"
+              ref={props.settingsButtonRef}
+              aria-pressed={props.settingsOpen}
+              aria-describedby="hud-sound-state"
+              onClick={props.onToggleSettings}
+            >
+              설정{props.soundOn ? " · 소리" : ""}
+            </button>
+            <span id="hud-sound-state" className="sr-only">
+              효과음 {props.soundOn ? "켜짐" : "꺼짐"}
+            </span>
+            <button className="btn btn--ghost btn--small" type="button" onClick={props.onLeave}>
+              나가기
+            </button>
+          </div>
+          {props.cornerPanel}
         </div>
       </div>
 

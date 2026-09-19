@@ -15,6 +15,7 @@ import {
   type RoomMessage,
   type ServerEvent,
 } from "./net/protocol.ts";
+import { isMatchEvent, MatchEventHub } from "./game/feedback.ts";
 import { SnapshotBuffer } from "./game/interpolation.ts";
 import { LobbyView } from "./ui/LobbyView.tsx";
 import { MatchView } from "./ui/MatchView.tsx";
@@ -83,10 +84,9 @@ export function App(): React.ReactElement {
   const [latency, setLatency] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [banner, setBanner] = useState<BannerMessage | null>(null);
-  /** 득점 연출용. 방금 넣은 팀과 그 시각. */
-  const [goalFlash, setGoalFlash] = useState<{ id: number; side: "left" | "right" } | null>(null);
-
   const buffer = useMemo(() => new SnapshotBuffer(), []);
+  /** 슛·패스·득점 같은 경기 이벤트는 React 상태를 거치지 않고 경기 화면으로 곧장 넘긴다. */
+  const matchEvents = useMemo(() => new MatchEventHub(), []);
   const connectionRef = useRef<Connection | null>(null);
   const bannerSeq = useRef(0);
 
@@ -128,10 +128,11 @@ export function App(): React.ReactElement {
     connection.resumeIfPossible();
 
     function handleEvent(event: ServerEvent): void {
+      if (isMatchEvent(event)) {
+        matchEvents.emit(event);
+        return;
+      }
       switch (event.kind) {
-        case "goal":
-          setGoalFlash({ id: Date.now(), side: event.side });
-          return;
         case "opponentJoined":
           showBanner(`${event.nickname} 님이 들어왔습니다.`);
           return;
@@ -156,7 +157,7 @@ export function App(): React.ReactElement {
       connection.stop();
       connectionRef.current = null;
     };
-  }, [buffer, showBanner]);
+  }, [buffer, matchEvents, showBanner]);
 
   // 배너는 잠깐만 보여 준다.
   useEffect(() => {
@@ -164,12 +165,6 @@ export function App(): React.ReactElement {
     const timer = window.setTimeout(() => setBanner(null), 4200);
     return () => window.clearTimeout(timer);
   }, [banner]);
-
-  useEffect(() => {
-    if (!goalFlash) return;
-    const timer = window.setTimeout(() => setGoalFlash(null), 2200);
-    return () => window.clearTimeout(timer);
-  }, [goalFlash]);
 
   const persistNickname = useCallback((value: string) => {
     setNickname(value);
@@ -227,12 +222,12 @@ export function App(): React.ReactElement {
       <MatchView
         connection={connectionRef.current}
         buffer={buffer}
+        events={matchEvents}
         joined={joined}
         room={room}
         link={link}
         latency={latency}
         banner={banner}
-        goalFlash={goalFlash}
         myNickname={nickname}
         onLeave={leave}
         onRematch={rematch}

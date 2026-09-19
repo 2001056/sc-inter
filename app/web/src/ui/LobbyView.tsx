@@ -8,7 +8,9 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CONTROL_HELP } from "../game/input.ts";
 import type { AnimState } from "../net/protocol.ts";
 import { PlayerPreview } from "../three/preview.ts";
+import { readGraphicsQuality, writeGraphicsQuality, type GraphicsQuality } from "../three/quality.ts";
 import { cleanNickname } from "../App.tsx";
+import { QualityPicker } from "./QualityPicker.tsx";
 
 const ANIM_CAPTION: Partial<Record<AnimState, string>> = {
   idle: "대기",
@@ -41,6 +43,9 @@ export function LobbyView(props: Props): React.ReactElement {
   const [caption, setCaption] = useState<AnimState>("idle");
   const [code, setCode] = useState(inviteCode);
   const [formError, setFormError] = useState<string | null>(null);
+  const [quality, setQuality] = useState<GraphicsQuality>(() => readGraphicsQuality());
+  const qualityRef = useRef(quality);
+  qualityRef.current = quality;
 
   // 프리뷰는 한 번만 만들고 rAF 로 돌린다. 닉네임이 바뀌면 유니폼만 다시 뽑는다.
   useEffect(() => {
@@ -49,7 +54,7 @@ export function LobbyView(props: Props): React.ReactElement {
 
     let preview: PlayerPreview;
     try {
-      preview = new PlayerPreview(canvas, "left", nickname, pitchHeight);
+      preview = new PlayerPreview(canvas, "left", nickname, pitchHeight, qualityRef.current);
     } catch {
       // WebGL 컨텍스트를 못 만드는 환경은 App 이 따로 안내하므로 조용히 넘어간다.
       return;
@@ -85,6 +90,12 @@ export function LobbyView(props: Props): React.ReactElement {
     const timer = window.setTimeout(() => previewRef.current?.restyle("left", nickname), 350);
     return () => window.clearTimeout(timer);
   }, [nickname]);
+
+  const changeQuality = (value: GraphicsQuality) => {
+    writeGraphicsQuality(value);
+    setQuality(value);
+    previewRef.current?.setQuality(value);
+  };
 
   const submit = (event: FormEvent, action: "create" | "join" | "practice") => {
     event.preventDefault();
@@ -184,6 +195,15 @@ export function LobbyView(props: Props): React.ReactElement {
           ) : (
             <p className="hint">방을 만들면 6자리 코드와 초대 링크가 나옵니다.</p>
           )}
+        </div>
+
+        <div className="panel-card">
+          <h2 className="panel-card__title">그래픽</h2>
+          <QualityPicker value={quality} onChange={changeQuality} />
+          <p className="hint">
+            자동은 기기에 맞춰 조절합니다. 화면이 끊기면 성능을 고르세요. 경기 중에도 설정에서
+            바꿀 수 있습니다.
+          </p>
         </div>
 
         <div className="panel-card">
