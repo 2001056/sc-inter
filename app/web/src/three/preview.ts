@@ -9,6 +9,7 @@ import * as THREE from "three";
 import type { AnimState, Side } from "../net/protocol.ts";
 import { PlayerAnimator } from "./animation.ts";
 import { appearanceFor, createPlayerModel, type PlayerModel } from "./playerModel.ts";
+import { AdaptiveQuality, baseProfile, type GraphicsQuality, type RenderProfile } from "./quality.ts";
 
 /** 순서대로 돌려 보여 줄 동작과 각 동작의 길이(초). */
 const SHOWCASE: { anim: AnimState; seconds: number; speed: number }[] = [
@@ -36,10 +37,19 @@ export class PlayerPreview {
   private stepTime = 0;
   private spin = 0.5;
 
-  constructor(canvas: HTMLCanvasElement, side: Side, nickname: string, height = 1.8) {
+  private readonly key: THREE.DirectionalLight;
+  private adaptive: AdaptiveQuality | null = null;
+  private profile: RenderProfile = { pixelRatio: 1, shadows: true };
+
+  constructor(
+    canvas: HTMLCanvasElement,
+    side: Side,
+    nickname: string,
+    height = 1.8,
+    quality: GraphicsQuality = "auto",
+  ) {
     this.height = height;
     this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -53,6 +63,7 @@ export class PlayerPreview {
     this.scene.add(new THREE.HemisphereLight("#cfe2ff", "#2c3f26", 1.45));
 
     const key = new THREE.DirectionalLight("#fff4e2", 3.4);
+    this.key = key;
     key.position.set(2.4, 3.6, 3.2);
     key.castShadow = true;
     key.shadow.mapSize.set(1024, 1024);
@@ -92,7 +103,29 @@ export class PlayerPreview {
     this.animator = new PlayerAnimator(this.model.rig);
     this.scene.add(this.model.group);
 
+    this.setQuality(quality);
+  }
+
+  /** 그래픽 품질을 바꾼다. 즉시 적용하며 저장은 하지 않는다. */
+  setQuality(quality: GraphicsQuality): void {
+    this.adaptive = quality === "auto" ? new AdaptiveQuality() : null;
+    this.applyProfile(this.adaptive ? this.adaptive.profile : baseProfile(quality));
+  }
+
+  private applyProfile(profile: RenderProfile): void {
+    const shadowsChanged = profile.shadows !== this.profile.shadows;
+    this.profile = profile;
+    this.renderer.setPixelRatio(profile.pixelRatio);
     this.resize();
+    this.renderer.shadowMap.enabled = profile.shadows;
+    this.key.castShadow = profile.shadows;
+    if (shadowsChanged) {
+      this.scene.traverse((object) => {
+        if (!(object instanceof THREE.Mesh)) return;
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        for (const material of materials) material.needsUpdate = true;
+      });
+    }
   }
 
   /** 닉네임·팀이 바뀌면 유니폼과 체형을 다시 뽑는다. */
@@ -103,9 +136,11 @@ export class PlayerPreview {
     this.model = createPlayerModel(appearance, this.height);
     this.animator = new PlayerAnimator(this.model.rig);
     this.scene.add(this.model.group);
+    // 새 재질은 지금 그림자 설정으로 처음 컴파일되므로 따로 할 일이 없다.
   }
 
   update(dt: number): void {
+    if (this.adaptive?.sample(dt * 1000)) this.applyProfile(this.adaptive.profile);
     this.stepTime += dt;
     const current = SHOWCASE[this.step] ?? SHOWCASE[0]!;
     if (this.stepTime > current.seconds) {

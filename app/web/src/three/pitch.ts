@@ -9,6 +9,7 @@
  * 경기장 한가운데가 월드 원점이라 카메라 계산이 단순해진다.
  */
 import * as THREE from "three";
+import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import type { PitchInfo } from "../net/protocol.ts";
 import { crowdTexture, netAlphaTexture, pitchTexture } from "./textures.ts";
 
@@ -24,97 +25,125 @@ export interface PitchScene {
   dispose(): void;
 }
 
-function buildGoal(pitch: PitchInfo, side: "left" | "right", netMap: THREE.Texture): THREE.Group {
+/** 같은 재질을 쓰는 조각들을 한 메시로 합친다. 조각마다 draw call 이 하나씩 들던 것을 줄인다. */
+function merged(pieces: THREE.BufferGeometry[], material: THREE.Material): THREE.Mesh {
+  const geometry = mergeGeometries(pieces.map((piece) => piece.index ? piece.toNonIndexed() : piece));
+  for (const piece of pieces) piece.dispose();
+  if (!geometry) throw new Error("경기장 조각을 합치지 못했습니다.");
+  return new THREE.Mesh(geometry, material);
+}
+
+/** 조각의 변환을 정점에 구워 넣는다. 합치기 전에 한 번만 부른다. */
+function placed(
+  geometry: THREE.BufferGeometry,
+  position: THREE.Vector3,
+  rotation = new THREE.Euler(),
+): THREE.BufferGeometry {
+  const matrix = new THREE.Matrix4().compose(
+    position,
+    new THREE.Quaternion().setFromEuler(rotation),
+    new THREE.Vector3(1, 1, 1),
+  );
+  return geometry.applyMatrix4(matrix);
+}
+
+/** 그물 면의 UV 를 실제 크기에 비례하게 늘린다. 텍스처를 면마다 복제하지 않아도 그물코 크기가 같다. */
+function netPlane(width: number, height: number): THREE.PlaneGeometry {
+  const plane = new THREE.PlaneGeometry(width, height);
+  const uv = plane.getAttribute("uv") as THREE.BufferAttribute;
+  for (let i = 0; i < uv.count; i += 1) uv.setXY(i, uv.getX(i) * width * 1.6, uv.getY(i) * height * 1.6);
+  return plane;
+}
+
+/**
+ * 골대 두 개. 기둥·크로스바는 한 메시, 그물 여덟 장은 한 메시로 합친다.
+ * 예전에는 그물 면마다 재질과 알파맵을 복제해 골대 하나에 draw call 7개를 썼다.
+ */
+function buildGoals(pitch: PitchInfo, netMap: THREE.Texture): THREE.Group {
   const group = new THREE.Group();
   const halfWidth = pitch.goalWidth / 2;
   const depth = Math.max(0.8, pitch.goalDepth);
-  // 왼쪽 골대는 -x 방향으로, 오른쪽 골대는 +x 방향으로 깊이가 생긴다.
-  const dir = side === "left" ? -1 : 1;
+  const frames: THREE.BufferGeometry[] = [];
+  const nets: THREE.BufferGeometry[] = [];
 
-  const frameMaterial = new THREE.MeshStandardMaterial({
-    color: "#f4f6fa",
-    roughness: 0.35,
-    metalness: 0.15,
-  });
+  for (const side of ["left", "right"] as const) {
+    // 왼쪽 골대는 -x 방향으로, 오른쪽 골대는 +x 방향으로 깊이가 생긴다.
+    const dir = side === "left" ? -1 : 1;
+    const x = (dir * pitch.length) / 2;
 
-  const post = new THREE.CylinderGeometry(POST_RADIUS, POST_RADIUS, CROSSBAR_HEIGHT, 12);
-  for (const z of [-halfWidth, halfWidth]) {
-    const mesh = new THREE.Mesh(post, frameMaterial);
-    mesh.position.set(0, CROSSBAR_HEIGHT / 2, z);
-    mesh.castShadow = true;
-    group.add(mesh);
-  }
-
-  const bar = new THREE.CylinderGeometry(POST_RADIUS, POST_RADIUS, pitch.goalWidth, 12);
-  const crossbar = new THREE.Mesh(bar, frameMaterial);
-  crossbar.rotation.x = Math.PI / 2;
-  crossbar.position.set(0, CROSSBAR_HEIGHT, 0);
-  crossbar.castShadow = true;
-  group.add(crossbar);
-
-  // 네트는 알파맵으로 그물코를 뚫은 얇은 면 네 장이다.
-  const netMaterial = new THREE.MeshStandardMaterial({
-    color: "#e8edf5",
-    alphaMap: netMap,
-    transparent: true,
-    opacity: 0.92,
-    alphaTest: 0.32,
-    side: THREE.DoubleSide,
-    roughness: 0.9,
-  });
-
-  const repeat = (map: THREE.Texture, u: number, v: number) => {
-    const clone = map.clone();
-    clone.needsUpdate = true;
-    clone.wrapS = THREE.RepeatWrapping;
-    clone.wrapT = THREE.RepeatWrapping;
-    clone.repeat.set(u, v);
-    return clone;
-  };
-
-  // 뒷면.
-  const back = new THREE.Mesh(
-    new THREE.PlaneGeometry(pitch.goalWidth, CROSSBAR_HEIGHT),
-    netMaterial.clone(),
-  );
-  (back.material as THREE.MeshStandardMaterial).alphaMap = repeat(netMap, pitch.goalWidth * 1.6, CROSSBAR_HEIGHT * 1.6);
-  back.rotation.y = Math.PI / 2;
-  back.position.set(dir * depth, CROSSBAR_HEIGHT / 2, 0);
-  group.add(back);
-
-  // 옆면 두 장.
-  for (const z of [-halfWidth, halfWidth]) {
-    const sideNet = new THREE.Mesh(
-      new THREE.PlaneGeometry(depth, CROSSBAR_HEIGHT),
-      netMaterial.clone(),
+    for (const z of [-halfWidth, halfWidth]) {
+      frames.push(
+        placed(
+          new THREE.CylinderGeometry(POST_RADIUS, POST_RADIUS, CROSSBAR_HEIGHT, 12),
+          new THREE.Vector3(x, CROSSBAR_HEIGHT / 2, z),
+        ),
+      );
+    }
+    frames.push(
+      placed(
+        new THREE.CylinderGeometry(POST_RADIUS, POST_RADIUS, pitch.goalWidth, 12),
+        new THREE.Vector3(x, CROSSBAR_HEIGHT, 0),
+        new THREE.Euler(Math.PI / 2, 0, 0),
+      ),
     );
-    (sideNet.material as THREE.MeshStandardMaterial).alphaMap = repeat(netMap, depth * 1.6, CROSSBAR_HEIGHT * 1.6);
-    sideNet.position.set((dir * depth) / 2, CROSSBAR_HEIGHT / 2, z);
-    group.add(sideNet);
+
+    // 그물: 뒷면, 옆면 두 장, 윗면.
+    nets.push(
+      placed(
+        netPlane(pitch.goalWidth, CROSSBAR_HEIGHT),
+        new THREE.Vector3(x + dir * depth, CROSSBAR_HEIGHT / 2, 0),
+        new THREE.Euler(0, Math.PI / 2, 0),
+      ),
+    );
+    for (const z of [-halfWidth, halfWidth]) {
+      nets.push(
+        placed(netPlane(depth, CROSSBAR_HEIGHT), new THREE.Vector3(x + (dir * depth) / 2, CROSSBAR_HEIGHT / 2, z)),
+      );
+    }
+    nets.push(
+      placed(
+        netPlane(depth, pitch.goalWidth),
+        new THREE.Vector3(x + (dir * depth) / 2, CROSSBAR_HEIGHT, 0),
+        new THREE.Euler(Math.PI / 2, 0, 0),
+      ),
+    );
   }
 
-  // 윗면.
-  const top = new THREE.Mesh(new THREE.PlaneGeometry(depth, pitch.goalWidth), netMaterial.clone());
-  (top.material as THREE.MeshStandardMaterial).alphaMap = repeat(netMap, depth * 1.6, pitch.goalWidth * 1.6);
-  top.rotation.x = Math.PI / 2;
-  top.position.set((dir * depth) / 2, CROSSBAR_HEIGHT, 0);
-  group.add(top);
+  const frameMesh = merged(
+    frames,
+    new THREE.MeshStandardMaterial({ color: "#f4f6fa", roughness: 0.35, metalness: 0.15 }),
+  );
+  frameMesh.castShadow = true;
+  group.add(frameMesh);
 
+  // 네트는 알파맵으로 그물코를 뚫은 얇은 면이다. 텍스처 한 장을 반복해 쓴다.
+  const netMesh = merged(
+    nets,
+    new THREE.MeshStandardMaterial({
+      color: "#e8edf5",
+      alphaMap: netMap,
+      transparent: true,
+      opacity: 0.92,
+      alphaTest: 0.32,
+      side: THREE.DoubleSide,
+      roughness: 0.9,
+    }),
+  );
+  group.add(netMesh);
   return group;
 }
 
+/**
+ * 계단식 관중석과 조명탑. 재질이 셋(벽·관중·조명탑·램프)뿐이라 재질별로 한 메시씩 합친다.
+ * 예전에는 상자 24개가 각각 draw call 이었다.
+ */
 function buildStands(pitch: PitchInfo, crowd: THREE.Texture): THREE.Group {
   const group = new THREE.Group();
   const outerX = pitch.length / 2 + 9;
   const outerZ = pitch.width / 2 + 8;
 
-  const wallMaterial = new THREE.MeshStandardMaterial({ color: "#131a22", roughness: 0.95 });
-  const crowdMaterial = new THREE.MeshStandardMaterial({
-    map: crowd,
-    roughness: 1,
-    // 관중석은 그림자를 받을 필요가 없어 조명 계산을 가볍게 둔다.
-    metalness: 0,
-  });
+  const walls: THREE.BufferGeometry[] = [];
+  const seats: THREE.BufferGeometry[] = [];
 
   // 계단식 관중석을 네 면에 두른다. 안쪽이 낮고 바깥이 높다.
   const tiers = 4;
@@ -124,44 +153,45 @@ function buildStands(pitch: PitchInfo, crowd: THREE.Texture): THREE.Group {
     const y = i * 1.1;
     const halfX = outerX + inset;
     const halfZ = outerZ + inset;
-
-    const longGeometry = new THREE.BoxGeometry(halfX * 2, height, 2.2);
-    const shortGeometry = new THREE.BoxGeometry(2.2, height, halfZ * 2);
+    const into = i === 0 ? walls : seats;
     for (const z of [-halfZ, halfZ]) {
-      const mesh = new THREE.Mesh(longGeometry, i === 0 ? wallMaterial : crowdMaterial);
-      mesh.position.set(0, y + height / 2, z);
-      group.add(mesh);
+      into.push(placed(new THREE.BoxGeometry(halfX * 2, height, 2.2), new THREE.Vector3(0, y + height / 2, z)));
     }
     for (const x of [-halfX, halfX]) {
-      const mesh = new THREE.Mesh(shortGeometry, i === 0 ? wallMaterial : crowdMaterial);
-      mesh.position.set(x, y + height / 2, 0);
-      group.add(mesh);
+      into.push(placed(new THREE.BoxGeometry(2.2, height, halfZ * 2), new THREE.Vector3(x, y + height / 2, 0)));
     }
   }
 
+  group.add(merged(walls, new THREE.MeshStandardMaterial({ color: "#131a22", roughness: 0.95 })));
+  // 관중석은 그림자를 받지 않는다. 조명 계산을 가볍게 둔다.
+  group.add(merged(seats, new THREE.MeshStandardMaterial({ map: crowd, roughness: 1, metalness: 0 })));
+
   // 조명탑 네 개.
-  const mastMaterial = new THREE.MeshStandardMaterial({ color: "#2b333d", roughness: 0.6 });
-  const lampMaterial = new THREE.MeshStandardMaterial({
-    color: "#fdfbe8",
-    emissive: "#fdf6d0",
-    emissiveIntensity: 1.6,
-    roughness: 0.4,
-  });
-  const mast = new THREE.CylinderGeometry(0.34, 0.5, 20, 10);
+  const masts: THREE.BufferGeometry[] = [];
+  const lamps: THREE.BufferGeometry[] = [];
+  const aim = new THREE.Object3D();
   for (const sx of [-1, 1]) {
     for (const sz of [-1, 1]) {
       const x = sx * (outerX + 8);
       const z = sz * (outerZ + 7);
-      const pole = new THREE.Mesh(mast, mastMaterial);
-      pole.position.set(x, 10, z);
-      group.add(pole);
-
-      const rig = new THREE.Mesh(new THREE.BoxGeometry(5, 2.4, 0.6), lampMaterial);
-      rig.position.set(x, 20.4, z);
-      rig.lookAt(0, 0, 0);
-      group.add(rig);
+      masts.push(placed(new THREE.CylinderGeometry(0.34, 0.5, 20, 10), new THREE.Vector3(x, 10, z)));
+      aim.position.set(x, 20.4, z);
+      aim.lookAt(0, 0, 0);
+      lamps.push(placed(new THREE.BoxGeometry(5, 2.4, 0.6), aim.position.clone(), aim.rotation.clone()));
     }
   }
+  group.add(merged(masts, new THREE.MeshStandardMaterial({ color: "#2b333d", roughness: 0.6 })));
+  group.add(
+    merged(
+      lamps,
+      new THREE.MeshStandardMaterial({
+        color: "#fdfbe8",
+        emissive: "#fdf6d0",
+        emissiveIntensity: 1.6,
+        roughness: 0.4,
+      }),
+    ),
+  );
 
   return group;
 }
@@ -196,11 +226,7 @@ export function createPitchScene(pitch: PitchInfo): PitchScene {
 
   const netMap = netAlphaTexture();
   disposables.push(netMap);
-  const leftGoal = buildGoal(pitch, "left", netMap);
-  leftGoal.position.x = -pitch.length / 2;
-  const rightGoal = buildGoal(pitch, "right", netMap);
-  rightGoal.position.x = pitch.length / 2;
-  group.add(leftGoal, rightGoal);
+  group.add(buildGoals(pitch, netMap));
 
   const crowd = crowdTexture();
   disposables.push(crowd);
@@ -228,28 +254,40 @@ export function createPitchScene(pitch: PitchInfo): PitchScene {
   };
 }
 
+export interface Lighting {
+  group: THREE.Group;
+  /** 그림자를 만드는 유일한 조명. 장면이 그림자 범위를 옮길 때 쓴다. */
+  key: THREE.DirectionalLight;
+  /** 주광이 경기장 중심에서 떨어진 방향과 거리. 그림자 범위를 옮겨도 빛 방향은 같다. */
+  keyOffset: THREE.Vector3;
+}
+
+/**
+ * 그림자 범위의 반지름(m). 조작 선수 주변만 덮는다.
+ *
+ * 예전에는 경기장 전체(±34.7m)를 2048 맵 하나로 덮었다(1화소 약 3.4cm). 지금은
+ * 카메라가 보는 곳 주변 ±17m 만 1024 맵으로 덮는다(1화소 약 3.3cm). 그림자 선명도는
+ * 거의 같고 그림자 맵에 그리는 화소는 1/4 이다. 중계 시점에서는 경기장 전체를 덮어
+ * 1화소가 약 6.8cm 로 흐려지지만, 그 거리에서는 선수 자체가 작게 보인다.
+ */
+export const FOLLOW_SHADOW_SPAN = 17;
+export const SHADOW_MAP_SIZE = 1024;
+
 /** 밤 경기장 분위기의 조명 한 벌. 그림자는 방향광 하나만 만든다. */
-export function createLighting(pitch: PitchInfo): THREE.Group {
+export function createLighting(pitch: PitchInfo): Lighting {
   const group = new THREE.Group();
 
   const hemi = new THREE.HemisphereLight("#9fc4ff", "#2c4a2f", 0.75);
   group.add(hemi);
 
   const key = new THREE.DirectionalLight("#fff6e0", 2.1);
-  key.position.set(pitch.length * 0.35, 34, pitch.width * 0.45);
+  const keyOffset = new THREE.Vector3(pitch.length * 0.35, 34, pitch.width * 0.45);
+  key.position.copy(keyOffset);
   key.castShadow = true;
-  key.shadow.mapSize.set(2048, 2048);
+  key.shadow.mapSize.set(SHADOW_MAP_SIZE, SHADOW_MAP_SIZE);
   key.shadow.bias = -0.0008;
   key.shadow.normalBias = 0.02;
-  const span = Math.max(pitch.length, pitch.width) * 0.62;
-  const camera = key.shadow.camera;
-  camera.left = -span;
-  camera.right = span;
-  camera.top = span;
-  camera.bottom = -span;
-  camera.near = 5;
-  camera.far = 110;
-  camera.updateProjectionMatrix();
+  setShadowSpan(key, FOLLOW_SHADOW_SPAN);
   group.add(key);
   group.add(key.target);
 
@@ -258,7 +296,20 @@ export function createLighting(pitch: PitchInfo): THREE.Group {
   fill.position.set(-pitch.length * 0.4, 22, -pitch.width * 0.5);
   group.add(fill);
 
-  return group;
+  return { group, key, keyOffset };
+}
+
+/** 그림자 카메라가 덮는 반지름을 바꾼다. 바뀔 때만 투영 행렬을 다시 계산한다. */
+export function setShadowSpan(key: THREE.DirectionalLight, span: number): void {
+  const camera = key.shadow.camera;
+  if (camera.right === span) return;
+  camera.left = -span;
+  camera.right = span;
+  camera.top = span;
+  camera.bottom = -span;
+  camera.near = 5;
+  camera.far = 110;
+  camera.updateProjectionMatrix();
 }
 
 /** 밤하늘 배경. 위는 짙은 남색, 지평선 근처는 조명이 번진 색. */
